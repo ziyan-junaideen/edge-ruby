@@ -29,13 +29,18 @@ module Edge
       # would reject the mismatch with a 400 nobody could explain.
       UNRESERVED = /[^A-Za-z0-9\-._~]/
 
+      # Ruby 3.4 deprecated `URI::DEFAULT_PARSER.escape` in favour of naming
+      # the RFC explicitly, and the suite runs with warnings on. 3.2 and 3.3,
+      # which this gem still supports, have no RFC2396_PARSER to name.
+      PARSER = defined?(URI::RFC2396_PARSER) ? URI::RFC2396_PARSER : URI::DEFAULT_PARSER
+
       # `.` and `..` are unreserved, so escaping leaves them intact and URI
       # resolution then removes them: `retrieve(".")` would address the
       # collection and fetch every record under a method that promises one.
       DOT_SEGMENTS = %w[. ..].freeze
 
       def member_path(id)
-        "#{collection_path}/#{URI::DEFAULT_PARSER.escape(checked_id(id), UNRESERVED)}"
+        "#{collection_path}/#{PARSER.escape(checked_id(id), UNRESERVED)}"
       end
 
       private
@@ -60,6 +65,26 @@ module Edge
       # another resource.
       def query_for(client, **query)
         Query.encode(**query, resource: contract_name, strict: client.config.strict)
+      end
+
+      # `retriable: true` says a repeat of this write is safe. The contract
+      # records which resources document a replay contract, and Transport
+      # checks that. It is not sufficient on its own: the server's replay
+      # lookup requires a binary idempotency key
+      # (`core/transactions.ex:898`), and a request without one falls through
+      # to `:miss` and inserts a second record. On a refund that is a second
+      # refund, so the key is required here rather than assumed.
+      def reject_unkeyed_replay!(attributes)
+        # When the resource has no replay contract at all, no key can make it
+        # safe. Transport says exactly that a moment later; asking for a key
+        # first would send the caller to add one that changes nothing.
+        return unless contract_spec&.fetch("idempotent_writes", false)
+        return if attributes["idempotency_key"].to_s.strip != ""
+
+        raise ArgumentError,
+              "#{contract_name} can only be retried with an idempotency_key. The API replays a " \
+              "write by looking that key up; without one a repeated request is a second record, " \
+              "not a replay."
       end
 
       def single(response, client)
@@ -275,17 +300,21 @@ module Edge
       # nil: the API has no handling for null linkage and answers with a 500
       # (docs/release-blockers.md, FU-13).
       #
-      # Attributes may be passed as a hash or as keywords. `client:` and
-      # `relationships:` are reserved, so an attribute with either name — no
-      # resource has one — must go in the hash.
+      # Attributes may be passed as a hash or as keywords. `client:`,
+      # `relationships:` and `retriable:` are reserved, so an attribute with
+      # one of those names — no resource has one — must go in the hash.
       #
-      # Not retriable. A repeat would create a second record: only
-      # payment_demands and refund_demands document a replay contract, and they
-      # carry an idempotency key for it.
-      def create(attributes = {}, client: nil, relationships: nil, **rest)
+      # Not retriable by default: a repeat would create a second record. Only
+      # payment_demands and refund_demands document a replay contract, and
+      # `retriable: true` opts into it. Both halves are checked — the contract
+      # must record the guarantee, and the request must carry the
+      # `idempotency_key` the server replays it by.
+      def create(attributes = {}, client: nil, relationships: nil, retriable: false, **rest)
         client = client_for(client)
-        body = body_for(write_attributes(attributes, rest, client), relationships)
-        single(client.post(collection_path, body: body), client)
+        written = write_attributes(attributes, rest, client)
+        reject_unkeyed_replay!(written) if retriable
+        body = body_for(written, relationships)
+        single(client.post(collection_path, body: body, retriable: retriable), client)
       end
     end
 
@@ -294,10 +323,29 @@ module Edge
       # Updates a record. Attributes not named are left alone.
       #
       #   Edge::Customer.update("cus_1", email: "ada@example.com")
-      def update(id, attributes = {}, client: nil, relationships: nil, **rest)
+      # Not retriable, and deliberately without the opt-in `create` has.
+      # `idempotent_writes` is recorded per resource, but the only replay
+      # lookup in the API is `replay_refund_demand/3` on the refund *create*
+      # path (`core/transactions.ex:897`). Nothing replays a PATCH, so a
+      # resource-level flag cannot speak for this operation.
+      def update(id, attributes = {}, client: nil, relationships: nil, retriable: false, **rest)
+        reject_retriable_update! if retriable
         client = client_for(client)
         body = body_for(write_attributes(attributes, rest, client), relationships, id: id)
         single(client.patch(member_path(id), body: body), client)
+      end
+
+      private
+
+      # Named rather than swallowed. Without this keyword `retriable: true`
+      # would fall into **rest and be sent as an attribute called "retriable",
+      # which the server drops without comment — so a caller asking for replay
+      # safety would get silence and no replay.
+      def reject_retriable_update!
+        raise ArgumentError,
+              "#{contract_name}.update cannot be retried. The API replays a write by looking " \
+              "up its idempotency key, and the only replay lookup it has is on the refund " \
+              "create path (core/transactions.ex:897). Nothing replays a PATCH."
       end
     end
 

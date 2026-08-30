@@ -33,7 +33,21 @@ module Edge
     # mistyped filter fetching an entire table, or a mistyped attribute
     # returning 200 and changing nothing.
     attr_accessor :strict
-    attr_reader :base_url, :max_retries, :retry_base_delay, :max_retry_delay
+    # Faraday SSL options, passed through to the adapter. The case this exists
+    # for is a development instance behind a private CA: Ruby's OpenSSL reads
+    # its own trust store (`OpenSSL::X509::DEFAULT_CERT_FILE`) and never
+    # consults the macOS keychain, so a `mkcert -install`ed root is invisible
+    # to it however well the browser and curl behave.
+    #
+    #   config.ssl = { ca_file: "#{`mkcert -CAROOT`.strip}/rootCA.pem" }
+    #
+    # Ignored when a connection is injected, which carries its own.
+    #
+    # Options that switch verification off are refused by Client for any host
+    # but loopback and .test/.local — see `tls_verification_disabled?`. The
+    # check lives there rather than here so that it sees the finished pair,
+    # whichever order base_url and ssl were assigned in.
+    attr_reader :ssl, :base_url, :max_retries, :retry_base_delay, :max_retry_delay
 
     def initialize
       # Through the writer, so the default is normalised on exactly the same
@@ -49,6 +63,7 @@ module Edge
       @app_info = nil
       @connection = nil
       @strict = false
+      @ssl = nil
     end
 
     # A negative delay makes Kernel#sleep raise, turning a recoverable blip
@@ -72,7 +87,33 @@ module Edge
     private :apply_defaults
 
     def base_url=(value)
-      @base_url = normalize_base_url(value)
+      @base_url = BaseUrl.normalize(value)
+    end
+
+    def ssl=(value)
+      unless value.nil? || value.is_a?(Hash)
+        raise ConfigurationError, "ssl must be a Hash, got #{value.inspect}"
+      end
+
+      @ssl = value&.transform_keys(&:to_sym)&.freeze
+    end
+
+    # True when `ssl` would leave the client unable to tell the host it meant
+    # to reach from any other host that answers.
+    #
+    # Three options do that, and checking only the obvious one is how a guard
+    # comes to be believed rather than effective. Faraday's Net::HTTP adapter
+    # reads `verify_mode` first and only falls back to `verify`
+    # (`adapter/net_http.rb:179`), so `verify_mode: OpenSSL::SSL::VERIFY_NONE`
+    # bypasses `verify` entirely — and VERIFY_NONE is 0, which is truthy in
+    # Ruby. `verify_hostname: false` keeps the chain check and drops the part
+    # that says the certificate belongs to this host.
+    def tls_verification_disabled?
+      return false unless @ssl
+
+      @ssl[:verify] == false ||
+        @ssl[:verify_hostname] == false ||
+        @ssl[:verify_mode] == OpenSSL::SSL::VERIFY_NONE
     end
 
     def max_retries=(value)
@@ -98,59 +139,5 @@ module Edge
       "#<#{self.class.name} base_url=#{@base_url.inspect} api_key=#{key}>"
     end
     alias to_s inspect
-
-    private
-
-    def normalize_base_url(value)
-      raise ConfigurationError, "base_url cannot be nil" if value.nil?
-
-      uri = parse_base_url(value)
-      validate_base_url!(uri, value)
-
-      # Store with exactly one trailing slash so joining a relative path is
-      # predictable: URI.join against ".../v2" would discard the last segment.
-      "#{uri.to_s.sub(%r{/+\z}, "")}/"
-    end
-
-    def validate_base_url!(uri, value)
-      unless uri.is_a?(URI::HTTP) && uri.host
-        raise ConfigurationError, "base_url must be an absolute http(s) URL, got #{value.inspect}"
-      end
-
-      # A query or fragment on a base URL is always a mistake, and a silent
-      # one: appending the trailing slash after them produces a base whose own
-      # path then evaporates on join, sending every request to the wrong place.
-      if uri.query || uri.fragment
-        raise ConfigurationError,
-              "base_url must not carry a query or fragment, got #{value.inspect}"
-      end
-
-      reject_userinfo!(uri)
-      reject_cleartext!(uri, value)
-    end
-
-    def reject_userinfo!(uri)
-      return unless uri.userinfo
-
-      raise ConfigurationError, "base_url must not carry credentials in its userinfo"
-    end
-
-    def parse_base_url(value)
-      URI.parse(value.to_s)
-    rescue URI::Error => e
-      raise ConfigurationError, "base_url is not a valid URL (#{e.message}): #{value.inspect}"
-    end
-
-    # This client carries a bearer token that authorises money movement, so
-    # cleartext is refused except where it can only be a local development
-    # setup. Edge's own dev hosts are HTTPS on *.tryedge.test.
-    def reject_cleartext!(uri, value)
-      return unless uri.scheme == "http"
-      return if uri.host.match?(Client::LOCAL_HOST)
-
-      raise ConfigurationError,
-            "base_url must use https so the API key is not sent in cleartext; " \
-            "http is allowed only for loopback and .test/.local hosts, got #{value.inspect}"
-    end
   end
 end

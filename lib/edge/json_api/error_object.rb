@@ -44,7 +44,24 @@ module Edge
         name.empty? ? nil : name.split("/").first
       end
 
-      def to_s = [title, detail].compact.join(": ")
+      # Names the member at fault, because the API frequently sends a batch of
+      # errors whose text is identical. Creating a payment demand without the
+      # 3DS fields answers with ten errors, every one of them reading
+      # "can't be blank" and every one pointing somewhere different. A message
+      # that repeats the title ten times says nothing the first one did not;
+      # the pointer is the only part that tells the caller what to fix.
+      #
+      # Empty text still yields an empty string, so that an error carrying only
+      # a `code` continues to fall back to the body excerpt in APIError.
+      def to_s
+        text = [title, detail].compact.map(&:to_s).reject(&:empty?).join(": ")
+        return "" if text.empty?
+
+        # `to_s` rather than truthiness: a server that sends `"pointer": ""`
+        # would otherwise render `": can't be blank"`.
+        label = [attribute, parameter, pointer].compact.map(&:to_s).find { |v| !v.empty? }
+        label ? "#{label}: #{text}" : text
+      end
 
       def inspect
         "#<#{self.class.name} status=#{status.inspect} code=#{code.inspect} " \

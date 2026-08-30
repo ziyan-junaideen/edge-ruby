@@ -128,7 +128,11 @@ module Edge
     end
 
     def build_connection
-      Faraday.new(request: { timeout: config.timeout, open_timeout: config.open_timeout }) do |f|
+      options = { request: { timeout: config.timeout, open_timeout: config.open_timeout } }
+      # Only when set, so the adapter keeps its own defaults otherwise rather
+      # than being handed an empty hash to interpret.
+      options[:ssl] = config.ssl if config.ssl
+      Faraday.new(**options) do |f|
         f.adapter Faraday.default_adapter
       end
     end

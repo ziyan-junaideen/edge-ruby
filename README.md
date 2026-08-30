@@ -62,11 +62,16 @@ Worth knowing before designing against it. Full detail and evidence in
   not capture — its guard only matches a *failed* demand. The processor layer
   implements capture and void, but nothing calls either function and no route
   exposes them. This client will not fake them.
-- **Refunds are not balance-checked.** The server does not track how much of a
-  payment demand has been refunded. Callers must track it themselves.
+- **A partial refund closes the payment demand.** Any refund moves the demand
+  to `refunded` regardless of amount, and no second refund is possible against
+  it. Nothing tracks a refunded total. Verified against a running instance; see
+  [`docs/release-blockers.md`](docs/release-blockers.md), FU-16.
 - **`GET /v2/financial_institutions` returns the wrong `data.type`.**
 - **Collections are not paginated.** Every record comes back in one response.
   See [`docs/pagination.md`](docs/pagination.md).
+- **Running against a local instance.** The dev API uses an mkcert
+  certificate that Ruby does not trust by default. See
+  [`docs/local-development.md`](docs/local-development.md).
 
 ## The contract directory
 

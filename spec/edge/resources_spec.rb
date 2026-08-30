@@ -76,7 +76,29 @@ RSpec.describe "the resource classes" do
 
     it "reads the card details safe to show a cardholder" do
       expect(method.last_four).to eq("4242")
+    end
+
+    it "reads an expiry the server sent" do
+      # The shape this reader is written for. No instance sends it today; the
+      # fixture is what the payload becomes once the view maps the fields
+      # (docs/release-blockers.md, FU-14).
       expect(method.expiry).to eq(%w[12 2030])
+      expect(method).to be_expiry_known
+    end
+
+    it "reports no expiry for the payload the API actually sends" do
+      # Verified against a running instance: the view declares expiry_month
+      # and expiry_year, the schema stores only card_expiry, and neither
+      # declaration maps to it — so both are dropped silently. A caller must
+      # be able to tell "not sent" from a real value.
+      live = described_class.new(
+        { "type" => "payment_methods", "id" => "pm_1",
+          "attributes" => { "last_four" => "0004", "kind" => "visa",
+                            "card_bin" => "40055192", "external_state" => "confirmed" } }
+      )
+
+      expect(live.expiry).to eq([nil, nil])
+      expect(live).not_to be_expiry_known
     end
 
     it "exposes the vault tokens but keeps them out of inspect" do

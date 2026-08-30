@@ -3,6 +3,13 @@
 RSpec.describe Edge::Operations do
   let(:secret) { "ept_sandbox_sQsnYGFoLvE2Qt7tmsvuDESB" }
   let(:client) { Edge::Client.new(api_key: secret) }
+  let(:retrying_client) do
+    Edge::Client.new(
+      api_key: secret,
+      retry_policy: Edge::RetryPolicy.new(max_retries: 2, base_delay: 0, max_delay: 0,
+                                          sleeper: ->(_) {})
+    )
+  end
   let(:base) { "https://api.tryedge.io" }
 
   def customer_body(id = "cus_1", attributes = { "email" => "ada@example.com" })
@@ -380,6 +387,70 @@ RSpec.describe Edge::Operations do
       expect { Edge::Customer.create({ email: "ada@example.com" }, client: retrying) }
         .to raise_error(Edge::ServerError)
       expect(a_request(:post, "#{base}/v2/customers")).to have_been_made.once
+    end
+
+    describe "retriable: true" do
+      # Proven against a live instance: posting the same refund twice with one
+      # idempotency_key returned the same record id both times, the second
+      # carrying the state it had reached since. Without a key the server's
+      # replay lookup falls through (core/transactions.ex:898) and inserts a
+      # second refund, so both halves are checked before a write may repeat.
+      let(:refund) { Class.new(Edge::Resource) { contract "refund_demands" } }
+
+      it "repeats a write the contract records a replay contract for" do
+        stub_request(:post, "#{base}/v2/refund_demands")
+          .to_return({ status: 500, body: "boom" },
+                     { status: 201, body: JSON.generate(
+                       "data" => { "type" => "refund_demands", "id" => "ref_1" }
+                     ) })
+
+        record = refund.create({ amount_cents: 100, idempotency_key: "key-1" },
+                               client: retrying_client, retriable: true)
+
+        expect(record.id).to eq("ref_1")
+        expect(a_request(:post, "#{base}/v2/refund_demands")).to have_been_made.twice
+      end
+
+      it "refuses without an idempotency_key, which is what makes it a replay" do
+        # No stub: the request must not be sent at all. One that were sent
+        # would fail the example on WebMock's unstubbed-request error, which
+        # is the assertion here.
+        expect { refund.create({ amount_cents: 100 }, client: client, retriable: true) }
+          .to raise_error(ArgumentError, /only be retried with an idempotency_key/)
+      end
+
+      it "refuses a blank key as firmly as a missing one" do
+        expect do
+          refund.create({ amount_cents: 100, idempotency_key: "  " },
+                        client: client, retriable: true)
+        end.to raise_error(ArgumentError, /only be retried with an idempotency_key/)
+      end
+
+      it "refuses on update, where the API has no replay lookup at all" do
+        # `idempotent_writes` is recorded per resource and payment_demands has
+        # it, so a gate that consulted only the contract would allow this.
+        demand = Class.new(Edge::Resource) { contract "payment_demands" }
+
+        expect { demand.update("pd_1", { description: "x" }, client: client, retriable: true) }
+          .to raise_error(ArgumentError, /Nothing replays a PATCH/)
+      end
+
+      it "names the missing replay contract, not the missing key" do
+        # customers has no replay contract, so asking the caller for an
+        # idempotency key would send them to add one that changes nothing.
+        expect do
+          Edge::Customer.create({ email: "ada@example.com" }, client: client, retriable: true)
+        end.to raise_error(ArgumentError, /cannot be retried/)
+      end
+
+      it "still refuses a resource the contract records no replay contract for" do
+        # customers has no idempotency_key at all, so a key cannot make it
+        # safe. The contract is checked as well as the key.
+        expect do
+          Edge::Customer.create({ email: "ada@example.com", idempotency_key: "key-1" },
+                                client: client, retriable: true)
+        end.to raise_error(ArgumentError, /cannot be retried/)
+      end
     end
   end
 

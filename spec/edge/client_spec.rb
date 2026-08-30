@@ -86,6 +86,114 @@ RSpec.describe Edge::Client do
     end
   end
 
+  describe "TLS" do
+    # Ruby's OpenSSL reads its own trust store and never consults the macOS
+    # keychain, so a development instance behind a `mkcert -install`ed root is
+    # trusted by the browser and by curl and rejected by this client. Without a
+    # way to name the CA there is no route to a local API but turning
+    # verification off wholesale.
+    it "passes ssl options to the connection it builds" do
+      client = described_class.new(api_key: secret_key, ssl: { ca_file: "/ca/root.pem" })
+
+      expect(client.send(:connection).ssl.ca_file).to eq("/ca/root.pem")
+    end
+
+    it "sends no ssl options at all when none are configured" do
+      # Asserting `ca_file` is nil here would pass whether the passthrough
+      # existed or not. What distinguishes the two is whether Faraday was
+      # handed an :ssl key in the first place.
+      allow(Faraday).to receive(:new).and_call_original
+
+      client.send(:connection)
+
+      expect(Faraday).to have_received(:new).with(hash_excluding(:ssl))
+    end
+
+    it "symbolises keys, so a string-keyed config file works" do
+      client = described_class.new(api_key: secret_key, ssl: { "ca_file" => "/ca/root.pem" })
+
+      expect(client.send(:connection).ssl.ca_file).to eq("/ca/root.pem")
+    end
+
+    it "allows verification to be turned off for a development host" do
+      client = described_class.new(api_key: secret_key, base_url: "https://api.tryedge.test:4001",
+                                   ssl: { verify: false })
+
+      expect(client.send(:connection).ssl.verify).to be(false)
+    end
+
+    # Faraday's Net::HTTP adapter reads `verify_mode` before `verify`, and
+    # VERIFY_NONE is 0 — truthy in Ruby — so a guard that checked `verify`
+    # alone was bypassed by two of the three options that disable TLS
+    # identity. Each is asserted separately: one shared example would pass
+    # while two of the three were unguarded.
+    [{ verify: false },
+     { verify_hostname: false },
+     { verify_mode: OpenSSL::SSL::VERIFY_NONE }].each do |options|
+      it "refuses #{options.keys.first} against a remote host" do
+        # This client sends a bearer token that authorises money movement.
+        # Unverified TLS hands it to whoever answers the connection.
+        expect do
+          described_class.new(api_key: secret_key, base_url: "https://api.tryedge.io",
+                              ssl: options)
+        end.to raise_error(Edge::ConfigurationError, /loopback and \.test/)
+      end
+
+      it "allows #{options.keys.first} against a development host" do
+        expect do
+          described_class.new(api_key: secret_key, base_url: "https://api.tryedge.test:4001",
+                              ssl: options)
+        end.not_to raise_error
+      end
+    end
+
+    it "judges the finished pair, whichever order the two were assigned in" do
+      # Client applies options in caller keyword order. A check that ran inside
+      # Configuration#ssl= saw the default production base_url and refused this
+      # legal configuration whenever ssl came first.
+      expect do
+        described_class.new(api_key: secret_key, ssl: { verify: false },
+                            base_url: "https://api.tryedge.test:4001")
+      end.not_to raise_error
+    end
+
+    it "cannot be bypassed by rescuing the error and reusing the configuration" do
+      # A writer that assigned before raising left the rejected value in place,
+      # so a caller who swallowed the error kept a live bypass.
+      config = Edge::Configuration.new
+      config.base_url = "https://api.tryedge.io"
+      config.ssl = { verify: false }
+
+      expect { described_class.new(api_key: secret_key, config: config) }
+        .to raise_error(Edge::ConfigurationError, /loopback and \.test/)
+    end
+
+    it "refuses through Edge.configure too" do
+      expect do
+        Edge.configure do |config|
+          config.api_key = secret_key
+          config.base_url = "https://api.tryedge.io"
+          config.ssl = { verify: false }
+        end
+      end.to raise_error(Edge::ConfigurationError, /loopback and \.test/)
+    ensure
+      Edge.reset!
+    end
+
+    it "refuses anything that is not a hash" do
+      expect { described_class.new(api_key: secret_key, ssl: "verify: false") }
+        .to raise_error(Edge::ConfigurationError, /must be a Hash/)
+    end
+
+    it "leaves an injected connection alone, since it carries its own" do
+      injected = Faraday.new(ssl: { ca_file: "/injected.pem" })
+      client = described_class.new(api_key: secret_key, connection: injected,
+                                   ssl: { ca_file: "/ignored.pem" })
+
+      expect(client.send(:connection).ssl.ca_file).to eq("/injected.pem")
+    end
+  end
+
   describe "#url_for" do
     it "joins a relative path" do
       expect(client.url_for("v2/customers")).to eq("https://api.tryedge.io/v2/customers")

@@ -84,6 +84,8 @@ module Edge
     def validate!
       raise ConfigurationError, "no api_key configured" if config.api_key.to_s.empty?
 
+      reject_remote_unverified!
+
       key = ApiKey.parse(config.api_key)
       if key&.browser?
         raise ConfigurationError,
@@ -93,6 +95,29 @@ module Edge
       end
 
       key
+    end
+
+    # Unverified TLS means this client cannot tell the host it meant to reach
+    # from any other host that answers, and it sends a bearer token that
+    # authorises money movement. Allowed only where it can only be a
+    # development setup — the same hosts `BaseUrl` permits cleartext http for.
+    #
+    # Checked here rather than in Configuration's writers for two reasons. The
+    # pair is only ever wrong in combination, so a writer that validated
+    # eagerly refused a legal configuration whenever `ssl` was assigned before
+    # `base_url` — which is caller keyword order, not something a caller
+    # should have to think about. And a writer that raises after assigning
+    # leaves the rejected value in place, so a caller who rescued the error
+    # kept the bypass. Nothing is usable until a Client exists, so this is the
+    # point where the finished pair can be judged once.
+    def reject_remote_unverified!
+      return unless config.tls_verification_disabled?
+      return if URI.parse(config.base_url.to_s).host.to_s.match?(LOCAL_HOST)
+
+      raise ConfigurationError,
+            "TLS verification is disabled, which is allowed only for loopback and " \
+            ".test/.local hosts; #{config.base_url.inspect} is not one. Point " \
+            "ssl[:ca_file] at the CA instead."
     end
   end
 end

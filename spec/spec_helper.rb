@@ -33,6 +33,13 @@ RSpec.configure do |config|
     Edge::Resource.registry.replace(snapshot)
   end
 
+  # Needs a server and a credential, and the rest of the suite may not touch
+  # the network at all. Run it with `--tag live` and the EDGE_LIVE_* variables
+  # spec/contract/live_spec.rb documents.
+  config.filter_run_excluding :live
+  config.before(:each, :live) { WebMock.allow_net_connect! }
+  config.after(:each, :live) { WebMock.disable_net_connect!(allow_localhost: false) }
+
   config.order = :random
   Kernel.srand config.seed
 end

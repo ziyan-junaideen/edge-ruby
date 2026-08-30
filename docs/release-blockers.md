@@ -392,3 +392,224 @@ and not something a client can detect.
 
 Add the `nil` clause, and settle whether the related-data callback receives one
 id or a list. Either convention is fine; having both is what produces the 500.
+
+## FU-14 — Documented card expiry is never serialized
+
+`CoreHTTP.Views.PaymentMethods.fields/0` declares `expiry_month` and
+`expiry_year` (`views/payment_methods.ex:27-28`). The schema stores neither:
+`Core.Consumer.PaymentMethod` has a single `field(:card_expiry, :date)`
+(`consumer/payment_method.ex:53`). Neither view field carries a `from:`
+mapping, so the serializer looks up struct keys that do not exist and drops
+both without comment.
+
+Confirmed against a running instance: no payment method carries either
+attribute, and `card_expiry` is not exposed under any name.
+
+`merchant_tokens` has the same defect. The view declares
+`expiry` (`views/merchant_tokens.ex:20`); the schema field is
+`expires_at` (`users/merchant_token.ex:22`), again with no `from:`.
+`merchants.business_privacy_policy_url` is declared and never sent.
+
+**There is currently no way to read a stored card's expiry date through the
+v2 API**, which a merchant needs in order to prompt before a card lapses.
+
+### What the client does
+
+The manifest records these attributes because the view declares them, so the
+generated readers exist and return nil. `Edge::PaymentMethod#expiry` is
+documented as returning nil against today's API rather than removed, because
+the fix upstream is a one-line `from:` and the reader will then work unchanged.
+
+The exact set is pinned in `spec/contract/live_spec.rb`, so a field that starts
+being sent shows up as a failing example rather than going unnoticed.
+
+### Asked of the API
+
+Add `from: :card_expiry` and derive the two integers, or expose `card_expiry`
+directly and drop the pair from the view. Same for `merchant_tokens.expiry`
+and `merchants.business_privacy_policy_url`.
+
+## FU-15 — The OpenAPI document attributes six fields to the wrong resource
+
+`beneficial_owners` is documented as carrying `icon_url`, `login_url`,
+`logo_url`, `name`, `primary_colour` and `state`. Those six are exactly
+`CoreHTTP.Views.FinancialInstitutions.fields/0`
+(`views/financial_institutions.ex:16-24`). The beneficial owners view declares
+only `ownership_percentage`, `created_at` and `updated_at`, and that is what a
+running instance returns.
+
+The manifest records them as `from: openapi-snapshot-only`, which is how they
+are distinguishable from fields the view actually declares.
+
+`payment_demands.amount_refunded_cents` is snapshot-only for a different
+reason: it is in the OpenAPI document and in no view at all (see FU-16).
+
+### What the client does
+
+Nothing yet — `Edge::Resource` generates a reader for every attribute the
+manifest records, whatever its provenance, so `BeneficialOwner#name` exists and
+always returns nil. Honouring `from:` when generating readers is worth doing
+before these resources ship.
+
+### Asked of the API
+
+Regenerate the OpenAPI document from the views. A published document that
+attributes one resource's fields to another is worse than an incomplete one:
+it is the artifact client generators are built against.
+
+**Status:** acknowledged by the Edge team as an API-side issue. The client will
+not work around it. See docs/api-todo.md.
+
+## FU-16 — Partial refunds are accepted and then made impossible
+
+`Core.Transactions.refund_payment_demand/*` (`transactions.ex:841-860`) inserts
+the refund and then calls
+`PaymentDemand.refunded_state_changeset/2` unconditionally, moving the demand
+`succeeded -> refunded` with no regard to amount. `refunded_state_changeset`
+validates the source state is `succeeded` (`payment_demand.ex:662`), so the
+second partial refund against the same demand fails with *"must have been
+successfully processed to be refunded"*.
+
+Confirmed against a running instance: a **100-cent** refund against a
+**10000-cent** demand moved the demand to `refunded`, and a further refund was
+refused.
+
+`amount_refunded_cents` appears nowhere in `lib/core`. Nothing accumulates a
+refunded total, so there is no state from which partial refunds could be
+supported even if the transition were conditional.
+
+### What the client does
+
+Nothing — refunds are commit 11. This is recorded so that commit is built
+against what the API does rather than what a partial-refund API would do.
+`Edge::RefundDemand` must not offer partial refunds as a supported workflow
+while the first one closes the demand.
+
+### Asked of the API
+
+Only transition to `refunded` once the refunded total reaches the demand
+amount, and serialize that total. Until then, document refunds as
+all-or-nothing.
+
+## FU-17 — `refund_demands.amount_currency` is a documented string that 500s
+
+The view declares `amount_currency` as `{:string, ...}`
+(`views/refund_demands.ex`). The schema is
+`Ecto.Enum<values: [:USD]>`, and the changeset sets it with
+`Ecto.Changeset.put_change/3` (`transactions.ex:85-87`), which does not cast.
+A JSON string therefore reaches `Repo.insert` uncast:
+
+```
+** (Ecto.ChangeError) value "USD" for Core.Transactions.RefundDemand.amount_currency
+   in `insert` does not match type #Ecto.Enum<values: [:USD]>
+```
+
+Sending the documented value for a documented field is a 500. **Omitting it
+succeeds**, because the fallback is `payment_demand.amount_currency`, already
+an atom loaded from the database.
+
+### What the client does
+
+Nothing yet. When refunds land in commit 11 the client must either omit
+`amount_currency` or refuse it with an explanation, rather than passing a
+caller's correct-looking `"USD"` through to a 500.
+
+### Asked of the API
+
+`cast` the attribute instead of `put_change`, so that a string is converted and
+an unsupported currency is a 422 rather than a crash.
+
+## FU-18 — There is no capture, void, cancel or authorize operation
+
+Searched the whole router and every controller: the only lifecycle verbs are
+`create` on `payment_demands`, `create` on `refund_demands`, and
+`PATCH /v2/payment_demands/:id/confirm`. There is no `capture`, no `void`, no
+`cancel` and no `authorize` action anywhere in `core_http/controllers`.
+
+`capture_method` exists on the schema and reads `automatic` on every record
+observed, including a live successful payment. Nothing sets it to anything else
+through the API.
+
+`confirm` is **not** a capture. It is two operations sharing a route
+(`payment_demands_controller.ex:317-365`):
+
+- for a payment demand, it is a **retry**, guarded by
+  `is_confirmable_demand/1`, which requires `processor_state in [:failed]`
+  (`transactions/payment.ex:26-28`);
+- for a payment *intent*, it promotes the intent into a demand
+  (`is_confirmable_intent/1`, states `[:incomplete, :ready]`).
+
+Note that `payment_intents` has no route and no view of its own.
+`find_payment_demand_by/4` falls back to `find_payment_intent_by/4`
+(`payment_demands_controller.ex:379-390`) and the intent is rendered through
+`Views.PaymentDemands`, so `GET /v2/payment_demands/:id` can return an intent
+serialized as `type: "payment_demands"`.
+
+This confirms RB-1 from the other direction: the authorize/capture/void split a
+Solidus or Spree gateway is written against does not exist in this API, and no
+amount of client work can supply it.
+
+### What the client does
+
+Commit 10 must ship `create` and `confirm` only, with `confirm` documented as a
+retry of a failed demand rather than as a capture. `#capture` and `#void` must
+not exist, for the same reason `PaymentMethod.create` does not: a method that
+existed and 404ed would read as a server fault rather than as a capability the
+API does not have.
+
+Verified against a running instance rather than only read from the source:
+
+```
+PATCH /v2/payment_demands/:id/capture  -> 404 (no such route)
+PATCH /v2/payment_demands/:id/confirm  -> 405 (route exists; demand was `processing`)
+```
+
+The 405 is the controller's `_data, _payload -> {:error, :method_not_allowed}`
+clause, reached because the demand was not `failed`. Note that **405 is not in
+the documented status list** for this API, and that it does not distinguish
+"this route does not accept PATCH" from "this record is in the wrong state" —
+which is the information a caller actually needs.
+
+### Asked of the API
+
+**Answered.** Deferred capture is not supported today for PCI compliance
+reasons. It is planned, but the timeline depends on business growth and may be
+more than a year out.
+
+The client therefore ships `create` and `confirm` only, and will not offer
+`#capture` or `#void` — for the same reason `PaymentMethod.create` does not
+exist. `capture_method: "automatic"` should be documented as the only value the
+API accepts, since it currently implies a manual counterpart that has no route.
+
+## FU-19 — A create validation error names no field in its message
+
+Creating a payment demand with only an amount answers with **ten** JSON:API
+error objects whose `title` is the identical string `"can't be blank"`. Each
+carries a distinct `source.pointer`; none carries a `detail`. A client that
+renders titles alone shows the same sentence ten times.
+
+The missing set is `amount_currency`, `purchase_reference`, `purchase_kind`,
+`threeds_version`, `threeds_status`, `eci`, `directory_transaction_eid`,
+`acs_transaction_eid`, `payer_timezone`, and the relationship
+`billing_address` — which points at `/data/relationships/billing_address`
+rather than an attribute, so a client that only understands attribute pointers
+loses that one entirely.
+
+Five of those are 3DS results. A live successful payment carries
+`eci: "05"`, `threeds_status: "Y"`, `threeds_version: "2.2.0"` and a
+`threeds_cryptogram` — values produced by a browser 3DS handshake. **A
+server-side gateway cannot synthesize them**, which bounds what commit 10 can
+honestly offer: creating a payment demand is not a purely server-side
+operation.
+
+### What the client does
+
+`Edge::JSONAPI::ErrorObject#to_s` now prefixes the pointer's attribute name, so
+the message reads `payer_timezone: can't be blank` and a batch of identical
+titles becomes a list of field names. `APIError#errors_by_attribute` already
+exposed the structured form.
+
+### Asked of the API
+
+Populate `detail` with something field-specific. `title` is defined as the
+generic summary; ten identical ones are within spec but carry no information.

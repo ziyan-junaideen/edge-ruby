@@ -30,6 +30,21 @@ module Edge
     # `expiry_month`/`expiry_year` as the server sent them. Deliberately not
     # turned into a Date: the API's own values are unvalidated strings, and a
     # reader that raised on a malformed one would fail at display time.
+    #
+    # **Returns `[nil, nil]` against today's API.** The view declares both
+    # fields, but the schema stores a single `card_expiry` date and neither
+    # declaration carries a `from:` mapping, so the serializer drops them and
+    # no payment method has ever carried either — verified against a running
+    # instance. See docs/release-blockers.md, FU-14.
+    #
+    # Kept rather than removed because the fix upstream is a one-line `from:`,
+    # after which this reader works unchanged. `#expiry_known?` is how a caller
+    # asks whether there is anything to show.
     def expiry = [self[:expiry_month], self[:expiry_year]]
+
+    # False whenever the API omitted the expiry, which is currently always.
+    # A caller prompting a cardholder about a lapsing card needs to tell "not
+    # sent" from "expires in month nil".
+    def expiry_known? = expiry.none?(&:nil?)
   end
 end
