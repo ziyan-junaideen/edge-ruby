@@ -141,6 +141,11 @@ already keys off the wrong type.
 | `{:error, :empty \| :not_found}` | 401 | `Unauthorized` |
 | no token | 401 | `Unauthorized` |
 
+Note the first row: a **malformed** `Authorization` header returns 422, not 401.
+This client maps 422 to `Edge::InvalidRequestError`, so a broken credential
+surfaces as a validation error rather than an authentication one. Nothing the
+client can fix — the status is the only signal it has.
+
 No JSON, no `application/vnd.api+json`. Every other error path returns JSON:API
 error objects.
 

@@ -16,22 +16,68 @@ module Edge
     # caller's request.
     DEFAULT_MAX_AUTO_PAGES = 1_000
 
-    attr_accessor :api_key, :timeout, :open_timeout, :max_auto_pages, :app_info, :connection
-    attr_reader :base_url
+    # Two extra attempts, so a transient blip costs at most three requests.
+    DEFAULT_MAX_RETRIES = 2
+    DEFAULT_RETRY_BASE_DELAY = 0.5
+    DEFAULT_MAX_RETRY_DELAY = 8.0
+
+    attr_accessor :api_key, :timeout, :open_timeout, :max_auto_pages, :app_info, :connection,
+                  :instrumenter, :retry_policy
+    attr_reader :base_url, :max_retries, :retry_base_delay, :max_retry_delay
 
     def initialize
       # Through the writer, so the default is normalised on exactly the same
       # path as a caller-supplied one and cannot drift from it.
       self.base_url = DEFAULT_BASE_URL
-      @timeout = DEFAULT_TIMEOUT
-      @open_timeout = DEFAULT_OPEN_TIMEOUT
-      @max_auto_pages = DEFAULT_MAX_AUTO_PAGES
+      apply_defaults
+
+      # nil means "ActiveSupport::Notifications if it is loaded, else nothing".
+      @instrumenter = nil
+      # nil means "build one from the settings above". Injectable so a suite
+      # can supply a policy that does not really sleep.
+      @retry_policy = nil
       @app_info = nil
       @connection = nil
     end
 
+    # A negative delay makes Kernel#sleep raise, turning a recoverable blip
+    # into an unrelated ArgumentError halfway through a retry.
+    def non_negative(name, value)
+      unless value.is_a?(Numeric) && !value.negative?
+        raise ConfigurationError, "#{name} must be a non-negative number, got #{value.inspect}"
+      end
+
+      value
+    end
+
+    def apply_defaults
+      @timeout = DEFAULT_TIMEOUT
+      @open_timeout = DEFAULT_OPEN_TIMEOUT
+      @max_auto_pages = DEFAULT_MAX_AUTO_PAGES
+      @max_retries = DEFAULT_MAX_RETRIES
+      @retry_base_delay = DEFAULT_RETRY_BASE_DELAY
+      @max_retry_delay = DEFAULT_MAX_RETRY_DELAY
+    end
+    private :apply_defaults
+
     def base_url=(value)
       @base_url = normalize_base_url(value)
+    end
+
+    def max_retries=(value)
+      unless value.is_a?(Integer) && !value.negative?
+        raise ConfigurationError, "max_retries must be a non-negative Integer, got #{value.inspect}"
+      end
+
+      @max_retries = value
+    end
+
+    def retry_base_delay=(value)
+      @retry_base_delay = non_negative(:retry_base_delay, value)
+    end
+
+    def max_retry_delay=(value)
+      @max_retry_delay = non_negative(:max_retry_delay, value)
     end
 
     # Never prints the key. Configuration objects end up in exception messages

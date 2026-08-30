@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "fileutils"
 require "open3"
 require "tmpdir"
 
@@ -100,18 +101,26 @@ RSpec.describe "packaging" do
     end
   end
 
-  # Builds and installs the gem once per example into a throwaway prefix, and
-  # yields a lambda that runs Ruby against that install and nothing else.
+  # Builds and installs the gem once for the whole file rather than per
+  # example: it is the slowest thing in the suite by two orders of magnitude.
   def in_installed_gem
-    Dir.mktmpdir do |dir|
-      build = run("gem build edge-ruby.gemspec --output #{dir}/edge-ruby.gem", chdir: root)
+    env = self.class.installed_gem_env(root) { |cmd, **opts| run(cmd, **opts) }
+    yield ->(script) { run3(%(ruby -e 'require "edge-ruby"; #{script}'), env: env) }
+  end
+
+  def self.installed_gem_env(root)
+    @installed_gem_env ||= begin
+      dir = Dir.mktmpdir("edge-ruby-packaging")
+      at_exit { FileUtils.remove_entry(dir) if File.directory?(dir) }
+
+      build = yield("gem build edge-ruby.gemspec --output #{dir}/edge-ruby.gem", chdir: root)
       raise "gem build failed: #{build.first}" unless build.last.success?
 
-      install = run("gem install --install-dir #{dir}/install --no-document #{dir}/edge-ruby.gem")
+      install = yield("gem install --install-dir #{dir}/install --no-document " \
+                      "#{dir}/edge-ruby.gem")
       raise "gem install failed: #{install.first}" unless install.last.success?
 
-      env = { "GEM_HOME" => "#{dir}/install", "GEM_PATH" => "#{dir}/install" }
-      yield ->(script) { run3(%(ruby -e 'require "edge-ruby"; #{script}'), env: env) }
+      { "GEM_HOME" => "#{dir}/install", "GEM_PATH" => "#{dir}/install" }
     end
   end
 

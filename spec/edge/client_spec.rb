@@ -310,6 +310,7 @@ RSpec.describe Edge::Client do
 
     it "converts a timeout into an Edge error" do
       stub_request(:get, "https://api.tryedge.io/v2/customers").to_timeout
+      client = described_class.new(api_key: secret_key, max_retries: 0)
 
       expect { client.get("v2/customers") }
         .to raise_error(Edge::ConnectionError, %r{GET https://api\.tryedge\.io/v2/customers})
@@ -318,6 +319,7 @@ RSpec.describe Edge::Client do
     it "converts a connection failure into an Edge error" do
       stub_request(:get, "https://api.tryedge.io/v2/customers")
         .to_raise(Faraday::ConnectionFailed.new("getaddrinfo: nodename nor servname provided"))
+      client = described_class.new(api_key: secret_key, max_retries: 0)
 
       expect { client.get("v2/customers") }
         .to raise_error(Edge::ConnectionError) { |error|
@@ -374,6 +376,7 @@ RSpec.describe Edge::Client do
 
     it "converts a timeout into an Edge error with no cause chain" do
       stub_request(:get, "https://api.tryedge.io/v2/customers").to_timeout
+      client = described_class.new(api_key: secret_key, max_retries: 0)
 
       expect { client.get("v2/customers") }
         .to raise_error(Edge::ConnectionError) { |error| expect(error.cause).to be_nil }
@@ -387,6 +390,116 @@ RSpec.describe Edge::Client do
 
       expect(response).to be_success
       expect(response.data).to eq("data" => [])
+    end
+  end
+
+  describe "retries" do
+    def no_sleep_client(**options)
+      described_class.new(
+        api_key: secret_key,
+        retry_policy: Edge::RetryPolicy.new(max_retries: 2, base_delay: 0, max_delay: 0,
+                                            sleeper: ->(_) {}),
+        **options
+      )
+    end
+
+    it "retries a read on a server error and returns the eventual success" do
+      stub_request(:get, "https://api.tryedge.io/v2/customers")
+        .to_return({ status: 500, body: "boom" }, { status: 200, body: '{"data":[]}' })
+
+      expect(no_sleep_client.get("v2/customers").data).to eq("data" => [])
+    end
+
+    it "gives up after the configured number of retries" do
+      stub = stub_request(:get, "https://api.tryedge.io/v2/customers")
+             .to_return(status: 500, body: "boom")
+
+      expect { no_sleep_client.get("v2/customers") }.to raise_error(Edge::ServerError)
+      expect(stub).to have_been_requested.times(3)
+    end
+
+    it "does not retry a write by default" do
+      # A write is replayed only when its server-side replay contract is
+      # documented and the operation opts in. Repeating a payment because a
+      # socket blipped is how a customer gets charged twice.
+      stub = stub_request(:post, "https://api.tryedge.io/v2/payment_demands")
+             .to_return(status: 500, body: "boom")
+
+      expect { no_sleep_client.post("v2/payment_demands", body: "{}") }
+        .to raise_error(Edge::ServerError)
+      expect(stub).to have_been_requested.once
+    end
+
+    it "retries a write that explicitly opts in" do
+      stub = stub_request(:post, "https://api.tryedge.io/v2/payment_demands")
+             .to_return({ status: 500, body: "boom" }, { status: 201, body: "{}" })
+
+      no_sleep_client.post("v2/payment_demands", body: "{}", retriable: true)
+
+      expect(stub).to have_been_requested.twice
+    end
+
+    it "replays the identical body and idempotency key" do
+      body = '{"data":{"attributes":{"idempotency_key":"order-42","amount_cents":500}}}'
+      stub = stub_request(:post, "https://api.tryedge.io/v2/payment_demands")
+             .with(body: body)
+             .to_return({ status: 500, body: "boom" }, { status: 201, body: "{}" })
+
+      no_sleep_client.post("v2/payment_demands", body: body, retriable: true)
+
+      expect(stub).to have_been_requested.twice
+    end
+
+    it "does not retry a client error even when the operation opts in" do
+      stub = stub_request(:post, "https://api.tryedge.io/v2/payment_demands")
+             .to_return(status: 422, body: "{}")
+
+      expect { no_sleep_client.post("v2/payment_demands", body: "{}", retriable: true) }
+        .to raise_error(Edge::InvalidRequestError)
+      expect(stub).to have_been_requested.once
+    end
+
+    it "refuses to retry a write the API documents no replay contract for" do
+      # meter_ticks carries an idempotency_key, but the API documents it as
+      # merely unique rather than replayable. Opting in would authorise a
+      # double write on a resource that cannot absorb one.
+      expect { no_sleep_client.post("v1/meter_ticks", body: "{}", retriable: true) }
+        .to raise_error(ArgumentError, /no replay contract/)
+    end
+
+    it "allows opting in for a resource the contract marks replayable" do
+      %w[v2/payment_demands v2/refund_demands].each do |path|
+        stub_request(:post, "https://api.tryedge.io/#{path}").to_return(status: 201, body: "{}")
+
+        expect { no_sleep_client.post(path, body: "{}", retriable: true) }.not_to raise_error
+      end
+    end
+
+    it "rejects nonsensical retry settings rather than failing mid-retry" do
+      # A negative delay makes Kernel#sleep raise, surfacing as an unrelated
+      # ArgumentError partway through a recovery attempt.
+      expect { described_class.new(api_key: secret_key, max_retries: -1) }
+        .to raise_error(Edge::ConfigurationError, /non-negative Integer/)
+      expect { described_class.new(api_key: secret_key, retry_base_delay: -1) }
+        .to raise_error(Edge::ConfigurationError, /non-negative number/)
+    end
+
+    it "lets a read opt out of retries" do
+      stub = stub_request(:get, "https://api.tryedge.io/v2/customers")
+             .to_return(status: 500, body: "boom")
+
+      expect { no_sleep_client.get("v2/customers", retriable: false) }
+        .to raise_error(Edge::ServerError)
+      expect(stub).to have_been_requested.once
+    end
+
+    it "retries a read on a transport failure" do
+      stub = stub_request(:get, "https://api.tryedge.io/v2/customers")
+      stub.to_raise(Faraday::ConnectionFailed.new("reset")).then.to_return(status: 200, body: "{}")
+
+      no_sleep_client.get("v2/customers")
+
+      expect(stub).to have_been_requested.twice
     end
   end
 
