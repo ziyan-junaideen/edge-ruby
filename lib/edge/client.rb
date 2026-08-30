@@ -14,13 +14,6 @@ module Edge
     # The API speaks JSON:API and rejects anything else with a 406 or 415.
     MEDIA_TYPE = "application/vnd.api+json"
 
-    # Anything with a scheme is treated as absolute and must pass the origin
-    # check. Deliberately not `://`: `https:evil.example/x` and
-    # `mailto:a@evil.example` carry a scheme without an authority, and matching
-    # only the hierarchical form would route them to the relative branch where
-    # `URI.join` returns them unchanged and unchecked.
-    ABSOLUTE = /\A[a-z][a-z0-9+.-]*:/i
-
     # Hosts for which cleartext HTTP is a development convenience rather than a
     # mistake. Everything else must be HTTPS: this client carries a bearer
     # token that authorises money movement.
@@ -62,29 +55,13 @@ module Edge
     end
 
     # Joins a relative API path onto the configured base URL, or verifies an
-    # absolute one against it.
-    #
-    # `URI.join` is not usable directly: a path with a leading slash would
-    # discard the base's own path, and an absolute URL would replace the origin
-    # outright. Both are how a caller-supplied or server-supplied string ends
-    # up pointing somewhere the credential should never go.
-    def url_for(path)
-      candidate = path.to_s
-      return verified_url(candidate) if candidate.match?(ABSOLUTE)
+    # absolute one against it. See Edge::UrlResolver.
+    def url_for(path) = resolver.resolve(path)
 
-      URI.join(config.base_url, candidate.sub(%r{\A/+}, "")).to_s
-    rescue URI::Error => e
-      raise Error, "could not build a URL from #{candidate.inspect}: #{e.message}"
-    end
-
-    # True when `url` addresses the same scheme, host and effective port as the
-    # configured base URL. Pagination links and redirects are checked against
-    # this before the bearer token is attached to them.
-    def same_origin?(url)
-      origin(URI.parse(url.to_s)) == origin(URI.parse(config.base_url))
-    rescue URI::Error
-      false
-    end
+    # True when `url` addresses the same origin as the configured base URL.
+    # Pagination links and redirects are checked against this before the bearer
+    # token is attached to them.
+    def same_origin?(url) = resolver.same_origin?(url)
 
     # Never prints the key.
     def inspect
@@ -93,6 +70,8 @@ module Edge
     alias to_s inspect
 
     private
+
+    def resolver = @resolver ||= UrlResolver.new(config.base_url)
 
     # Deliberately not public: a Faraday::Connection has no redacting
     # `inspect`, so exposing one would put whatever it holds into every
@@ -113,12 +92,49 @@ module Edge
     def request(method, path, body: nil, params: nil, headers: nil)
       url = url_for(path)
 
-      connection.run_request(method, url, body, request_headers(headers)) do |req|
-        req.params.update(params) if params
-        # Applied here too, so timeouts hold on an injected connection.
-        req.options.timeout = config.timeout
-        req.options.open_timeout = config.open_timeout
+      raw = connection.run_request(method, url, body, request_headers(headers)) do |req|
+        apply_request_options(req, params)
       end
+
+      Response.from_faraday(raw).raise_on_error!
+    rescue Faraday::Error => e
+      # `cause: nil` is load-bearing. Raising inside a rescue would otherwise
+      # attach the Faraday error as `cause`, and Faraday::Error#inspect renders
+      # the whole request including the Authorization header. Exception
+      # reporters and Exception#full_message both walk the cause chain, so the
+      # credential would reach them despite the message being scrubbed.
+      raise transport_error(method, url, e), cause: nil
+    end
+
+    # Faraday::Error#inspect renders the whole request, Authorization header
+    # included. Only the message is carried forward, scrubbed, and the original
+    # is dropped rather than retained as `cause`.
+    def transport_error(method, url, error)
+      # The Faraday message frequently re-embeds the full URL, query string and
+      # all, so it is scrubbed rather than trusted.
+      detail = Redaction.scrub_query(Redaction.scrub(error.message.to_s))
+
+      ConnectionError.new(
+        "#{method.to_s.upcase} #{redacted_url(url)} failed: #{detail}",
+        cause_class: error.class.name
+      )
+    end
+
+    # The path only. A query string can carry customer data — an email being
+    # filtered on, for instance — and this string ends up in exception
+    # trackers.
+    def redacted_url(url)
+      uri = URI.parse(url)
+      "#{uri.scheme}://#{uri.host}#{uri.path}"
+    rescue URI::Error
+      "the request URL"
+    end
+
+    def apply_request_options(req, params)
+      req.params.update(params) if params
+      # Applied per request, so timeouts hold on an injected connection too.
+      req.options.timeout = config.timeout
+      req.options.open_timeout = config.open_timeout
     end
 
     def request_headers(extra)
@@ -129,32 +145,6 @@ module Edge
         "User-Agent" => user_agent
       }
       extra ? base.merge(extra) : base
-    end
-
-    # Scheme and host are case-insensitive (RFC 3986 3.2.2). URI.parse
-    # normalises the scheme but not the host, so the host is downcased here;
-    # without this a legitimately differently-cased link is refused.
-    def origin(uri)
-      [uri.scheme&.downcase, uri.host&.downcase, uri.port]
-    end
-
-    def verified_url(url)
-      raise InsecureRedirectError.new(url, config.base_url) unless same_origin?(url)
-
-      normalize(url)
-    end
-
-    # Echoing the caller's string back would carry two things forward that
-    # should not survive: host casing, which makes otherwise identical URLs
-    # look different in logs and cache keys, and userinfo, which Faraday turns
-    # into a Basic auth header. The host has already been checked, so nothing
-    # here changes where the request goes.
-    def normalize(url)
-      uri = URI.parse(url)
-      uri.password = nil
-      uri.user = nil
-      uri.host = uri.host.downcase if uri.host
-      uri.to_s
     end
 
     def build_connection

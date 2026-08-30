@@ -4,8 +4,13 @@ require "monitor"
 
 require_relative "edge/version"
 require_relative "edge/error"
+require_relative "edge/contract"
+require_relative "edge/redaction"
+require_relative "edge/json_api/error_object"
 require_relative "edge/errors"
+require_relative "edge/response"
 require_relative "edge/api_key"
+require_relative "edge/url_resolver"
 require_relative "edge/configuration"
 require_relative "edge/client"
 

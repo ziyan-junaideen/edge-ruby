@@ -77,22 +77,41 @@ RSpec.describe "packaging" do
     # Slow, so it is tagged and can be excluded locally with
     # `rspec --tag '~packaging'`. CI always runs it.
     it "installs and requires under the gem name" do
-      Dir.mktmpdir do |dir|
-        build = run("gem build edge-ruby.gemspec --output #{dir}/edge-ruby.gem", chdir: root)
-        expect(build.last).to be_success, "gem build failed: #{build.first}"
+      in_installed_gem do |run_ruby|
+        stdout, stderr, status = run_ruby.call("print Edge::VERSION")
 
-        install = run("gem install --install-dir #{dir}/install --no-document " \
-                      "#{dir}/edge-ruby.gem")
-        expect(install.last).to be_success, "gem install failed: #{install.first}"
-
-        stdout, stderr, status = run3(
-          "ruby -e 'require \"edge-ruby\"; print Edge::VERSION'",
-          env: { "GEM_HOME" => "#{dir}/install", "GEM_PATH" => "#{dir}/install" }
-        )
         expect(status).to be_success, "require failed: #{stderr}"
         # stdout alone, so a deprecation warning on stderr does not fail this.
         expect(stdout).to eq(Edge::VERSION)
       end
+    end
+
+    it "can still redact from the installed gem" do
+      # Redaction reads the contract manifest at runtime, so a gemspec change
+      # that stopped shipping it would silently disable PII filtering in
+      # production while every unit test still passed.
+      in_installed_gem do |run_ruby|
+        stdout, stderr, status =
+          run_ruby.call('print Edge::Redaction.scrub_data({"id_number" => "x"})["id_number"]')
+
+        expect(status).to be_success, stderr
+        expect(stdout).to eq("[FILTERED]")
+      end
+    end
+  end
+
+  # Builds and installs the gem once per example into a throwaway prefix, and
+  # yields a lambda that runs Ruby against that install and nothing else.
+  def in_installed_gem
+    Dir.mktmpdir do |dir|
+      build = run("gem build edge-ruby.gemspec --output #{dir}/edge-ruby.gem", chdir: root)
+      raise "gem build failed: #{build.first}" unless build.last.success?
+
+      install = run("gem install --install-dir #{dir}/install --no-document #{dir}/edge-ruby.gem")
+      raise "gem install failed: #{install.first}" unless install.last.success?
+
+      env = { "GEM_HOME" => "#{dir}/install", "GEM_PATH" => "#{dir}/install" }
+      yield ->(script) { run3(%(ruby -e 'require "edge-ruby"; #{script}'), env: env) }
     end
   end
 

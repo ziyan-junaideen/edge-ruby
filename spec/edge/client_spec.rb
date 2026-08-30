@@ -289,6 +289,107 @@ RSpec.describe Edge::Client do
     end
   end
 
+  describe "failures" do
+    it "raises a typed error for an API failure" do
+      stub_request(:get, "https://api.tryedge.io/v2/customers")
+        .to_return(status: 404, headers: { "Content-Type" => "application/vnd.api+json" },
+                   body: JSON.generate("errors" => [{ "title" => "not found" }]))
+
+      expect { client.get("v2/customers") }
+        .to raise_error(Edge::NotFoundError, /not found/)
+    end
+
+    it "raises a typed error for a plain-text auth failure" do
+      # The API answers auth failures with a bare reason phrase and no JSON.
+      stub_request(:get, "https://api.tryedge.io/v2/customers")
+        .to_return(status: 401, headers: { "Content-Type" => "text/plain" }, body: "Unauthorized")
+
+      expect { client.get("v2/customers") }
+        .to raise_error(Edge::AuthenticationError, /Unauthorized/)
+    end
+
+    it "converts a timeout into an Edge error" do
+      stub_request(:get, "https://api.tryedge.io/v2/customers").to_timeout
+
+      expect { client.get("v2/customers") }
+        .to raise_error(Edge::ConnectionError, %r{GET https://api\.tryedge\.io/v2/customers})
+    end
+
+    it "converts a connection failure into an Edge error" do
+      stub_request(:get, "https://api.tryedge.io/v2/customers")
+        .to_raise(Faraday::ConnectionFailed.new("getaddrinfo: nodename nor servname provided"))
+
+      expect { client.get("v2/customers") }
+        .to raise_error(Edge::ConnectionError) { |error|
+          expect(error.cause_class).to eq("Faraday::ConnectionFailed")
+        }
+    end
+
+    it "does not leak the key through a transport failure or its cause chain" do
+      # A timeout carries no request data, so it cannot prove anything here.
+      # `f.response :raise_error` is a very common Faraday configuration and it
+      # produces an error whose #inspect renders the whole request, including
+      # the Authorization header. Exception reporters and
+      # Exception#full_message both walk `cause`, so a scrubbed message is not
+      # enough on its own.
+      stubs = Faraday::Adapter::Test::Stubs.new
+      stubs.get("https://api.tryedge.io/v2/customers") { [500, {}, "boom"] }
+      injected = described_class.new(
+        api_key: secret_key,
+        connection: Faraday.new do |f|
+          f.response :raise_error
+          f.adapter(:test, stubs)
+        end
+      )
+
+      expect { injected.get("v2/customers") }
+        .to raise_error(Edge::ConnectionError) { |error|
+          expect(error.message).not_to include(secret_key)
+          expect(error.cause).to be_nil
+          expect(error.full_message(highlight: false)).not_to include(secret_key)
+        }
+    end
+
+    it "does not put query parameters into a transport failure message" do
+      # A filter value can be a customer email, and this string reaches
+      # exception trackers. Faraday's own message re-embeds the full URL, so
+      # stripping the query from our half is not sufficient.
+      stubs = Faraday::Adapter::Test::Stubs.new
+      stubs.get("https://api.tryedge.io/v2/customers?filter%5Bemail%5D=someone@example.com") do
+        [500, {}, "boom"]
+      end
+      injected = described_class.new(
+        api_key: secret_key,
+        connection: Faraday.new do |f|
+          f.response :raise_error
+          f.adapter(:test, stubs)
+        end
+      )
+
+      expect { injected.get("v2/customers", params: { "filter[email]" => "someone@example.com" }) }
+        .to raise_error(Edge::ConnectionError) { |error|
+          expect(error.message).not_to include("someone@example.com")
+        }
+    end
+
+    it "converts a timeout into an Edge error with no cause chain" do
+      stub_request(:get, "https://api.tryedge.io/v2/customers").to_timeout
+
+      expect { client.get("v2/customers") }
+        .to raise_error(Edge::ConnectionError) { |error| expect(error.cause).to be_nil }
+    end
+
+    it "returns a parsed response on success" do
+      stub_request(:get, "https://api.tryedge.io/v2/customers")
+        .to_return(status: 200, body: JSON.generate("data" => []))
+
+      response = client.get("v2/customers")
+
+      expect(response).to be_success
+      expect(response.data).to eq("data" => [])
+    end
+  end
+
   describe "credential containment" do
     it "does not keep the key on the connection object" do
       # Faraday::Connection has no redacting inspect, so anything stored in its
