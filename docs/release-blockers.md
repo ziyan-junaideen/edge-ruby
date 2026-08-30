@@ -1,0 +1,210 @@
+# Release blockers and API-side follow-ups
+
+Findings that constrain what this client may honestly expose. Each was verified
+against the Edge source at `83641f3d887e02e021805e97d2fe78a54d5825d3`
+(branch `edg-1498-implement-pagination-in-to-the-jsonapi-interface`), with
+`main` at `8372ac06c76b5273ec36c365079759fdaa83010e`.
+
+Blockers gate a release. Follow-ups are for the API team.
+
+---
+
+## RB-1 — There is no capture and no void (blocker)
+
+**Blocks:** the Solidus and Spree gateways. Does not block the client's core.
+
+`PATCH /v2/payment_demands/{id}/confirm` means "ready for processing". Its
+guards are in `ept/lib/core/transactions/payment.ex:22-28`:
+
+```elixir
+defguard is_confirmable_intent(payment_intent)
+         when is_struct(payment_intent, Core.Transactions.PaymentIntent) and
+                payment_intent.processor_state in [:incomplete, :ready]
+
+defguard is_confirmable_demand(payment_demand)
+         when is_struct(payment_demand, Core.Transactions.PaymentDemand) and
+                payment_demand.processor_state in [:failed]
+```
+
+A demand is confirmable only when it has **failed** — that path is retry. A
+succeeded manual-capture authorization matches neither guard. **`confirm` is not
+capture.**
+
+There is no capture or void route in the router or in the snapshot. The
+processor layer can do both:
+
+- `ept/lib/core/remote_client/nmi.ex:127-128` — `capture_method: :manual` is
+  sent to NMI as `"auth"` rather than `"sale"`, so authorizations really are
+  created.
+- `ept/lib/core/remote_client/nmi.ex:238` — `capture_transaction/1`, NMI
+  `"type" => "capture"`.
+- `ept/lib/core/remote_client/nmi.ex:271` — `cancel_transaction/1`, NMI
+  `"type" => "void"`.
+
+**Neither function has a caller anywhere in the tree.** There is no
+orchestration and no HTTP surface. Authorize -> capture -> void is not reachable
+end to end, and a `capture_method: :manual` demand strands its authorization.
+
+### What the client does
+
+- No `#capture`. It will not alias `confirm`, which would silently do the wrong
+  thing.
+- No `#void`. A refund is not a void. A gateway may choose that translation as
+  documented store policy; this client will not make the choice on its behalf.
+- Ship what the API supports, document the gap.
+
+### Asked of the API
+
+Expose capture and void, **or** reject `capture_method: :manual` at the edge so
+authorizations are not created that nothing can settle or release.
+
+---
+
+## RB-2 — Refunds are not checked against a remaining balance (blocker)
+
+**Blocks:** any partial-refund flow, which means the Solidus and Spree gateways.
+
+On `main`, `ept/lib/core/transactions/refund_demand.ex:75-102`:
+
+- `amount_cents` defaults to the **full** payment demand amount when omitted.
+- Eligibility is `validate_can_be_refunded/1` (line 149), which requires
+  `processor_state: :succeeded` and a refundable authorization.
+- `Core.Transactions.find_refundable_authorization/1`
+  (`ept/lib/core/transactions.ex:1325`) matches a `:completed` authorization for
+  the **full** amount. It does not consider how much has already been refunded.
+
+There is no cumulative check and no `amount_refunded_cents` on the server. A
+merchant can issue several refunds against one payment demand, each up to the
+full amount.
+
+The balance tracking described in `contract/openapi.json` — "a payment demand
+may be refunded more than once, so long as the refunds together do not exceed
+its total", in-flight refunds reserving their amount — exists only on the
+unmerged `backup/edg-4035-partial-refunds-wip-20260819` branch. See
+`contract/PROVENANCE.md`.
+
+### What the client does
+
+- Does not expose `amount_refunded_cents`; it does not exist.
+- Does not compute or imply a refundable balance.
+- Documents that callers must track refunded totals themselves, and that the
+  server will not stop an over-refund.
+
+### Asked of the API
+
+Enforce the cumulative balance server-side. A client-side guard is not a
+substitute: two concurrent refunds would both pass it.
+
+---
+
+## RB-3 — `financial_institutions` reports the wrong JSON:API type (blocker)
+
+`ept/lib/core_http/views/financial_institutions.ex:12`:
+
+```elixir
+def type(), do: "beneficial_owners"
+```
+
+So `GET /v2/financial_institutions` returns objects whose `data.type` is
+`beneficial_owners`. The spec generator emits no `financial_institutions_*`
+schema at all; all four paths share `beneficial_owners_collection` / `_member`.
+
+The collision resolved in favour of the financial institution:
+`beneficial_owners_member` holds `icon_url`, `login_url`, `logo_url`, `name`,
+`primary_colour`, `state` (plus timestamps) and has no `ownership_percentage`.
+So the *published docs for `/v2/beneficial_owners` describe the wrong resource*,
+while `/v2/financial_institutions` gets the right fields under a misleading
+name. Both endpoints are affected; the beneficial-owner one is worse.
+
+### What the client does
+
+A `data.type` -> class registry cannot be the sole means of identifying a
+response. The requested route disambiguates, and `financial_institutions`
+carries an explicit note until this is fixed. Deserialising by type alone would
+hand back a `BeneficialOwner` populated with financial-institution fields.
+
+### Asked of the API
+
+One-character fix. Note it is technically a breaking change for anyone who
+already keys off the wrong type.
+
+---
+
+## RB-4 — Auth failures are plain text, not JSON:API (blocker for error handling)
+
+`ept/lib/core_http/plugs/http_authorization_plug.ex:30-50` responds with
+`Plug.Conn.send_resp/3` carrying a bare reason phrase:
+
+| Condition | Status | Body |
+| --- | --- | --- |
+| `{:error, :bad_value}` | 422 | `Unprocessable Content` |
+| `{:error, :empty \| :not_found}` | 401 | `Unauthorized` |
+| no token | 401 | `Unauthorized` |
+
+No JSON, no `application/vnd.api+json`. Every other error path returns JSON:API
+error objects.
+
+### What the client does
+
+Never assumes a JSON body. Every exception retains status, headers and raw
+body. A plain-text 401 or 422 must produce a useful typed exception, never a
+`JSON::ParserError`.
+
+### Asked of the API
+
+Return JSON:API error documents here, consistently with every other error.
+
+---
+
+## FU-1 — The OpenAPI document describes no request bodies
+
+Every write operation in the snapshot carries `requestBody: null`. Request
+shapes had to be inferred from `ept/test/core_http/controllers/*_test.exs`.
+
+This is the reason `contract/manifest.yml` is hand-derived and the drift check
+cannot validate write coverage. Documenting request bodies would make the whole
+contract process meaningfully stronger.
+
+## FU-2 — Invalid filters and sorts are silently dropped
+
+Rather than rejected. On today's unpaginated production this turns one typo into
+a full-collection fetch. Server-side validation would be far better than
+client-side guessing. See `docs/pagination.md`.
+
+## FU-3 — The OpenAPI artifact is untracked and unreproducible
+
+`ept/openapi.json` is gitignored by the monorepo root `.gitignore:8` and has
+never been committed, so no consumer can tell which tree it came from. Ours came
+from an abandoned WIP branch and documents a field no server has. Publishing a
+spec per release, or committing it, would prevent that.
+
+## FU-4 — No rate limiting is documented
+
+The snapshot documents no 429 and no rate-limit headers. If a limiter sits in
+front of production, its headers should be specified so clients can honour them
+rather than treating a 429 as an opaque failure.
+
+## FU-5 — Legacy webhook signing offers no integrity
+
+`ept/lib/core/job/deliver_webhook_job.ex:66-72` — merchants on delivery version
+v1/v2 get `x-hub-signature: Base64(SHA1(secret_key))`, constant per subscription
+and not a function of the body. The server's own comment says it is "not a
+signature in any meaningful sense".
+
+This client verifies v3 only and will not present the legacy header as
+verification. Is the delivery version readable from a `WebhookSubscription`, so
+a client can tell a merchant to upgrade rather than silently failing?
+
+## FU-6 — Confirm the API key prefixes
+
+`contract/manifest.yml` resolves `merchant_tokens.context` to `browser` and
+`secret`, and `merchant_tokens.schema` to the mode. The Elixir SDK's README
+shows `ept_sandbox_…`. Confirm the exact live, sandbox and browser prefixes so
+the client can reject a publishable key server-side with a useful error, and
+expose `mode` only for recognised prefixes rather than guessing.
+
+## FU-7 — Is `/v1` metering merchant-facing?
+
+`meters`, `meter_ticks`, `meter_rate_cards`, `meter_notifications` and
+`meter_digests` are the only `/v1` paths. If they are internal, they should not
+enter this client's public surface at 1.0.
