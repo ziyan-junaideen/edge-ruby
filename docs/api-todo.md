@@ -38,6 +38,18 @@ answer, the client cannot verify its contract for them, and
 `spec/contract/live_spec.rb` records the set so that one starting to work shows
 up as a failing example.
 
+## Most urgent
+
+**FU-20 — `payment_demands.idempotency_key` does not prevent double charging.**
+The view documents it as "a unique value that prevents double charging". It is
+never cast on create, there is no replay lookup, and no unique constraint
+fires. Two identical POSTs sharing one key produced two payment demands, both
+201. Refunds are unaffected and work correctly.
+
+An integrator who reads the field description and writes a retry loop against
+it will charge customers twice. This is worth fixing ahead of everything else
+on this page.
+
 ## Correctness
 
 | # | Finding | Effect |
@@ -65,12 +77,10 @@ Not for the API team — recorded here so it is not lost.
   Harmless today because no sub-resource action is implemented; **must be
   fixed before `confirm` ships in commit 10**, because `confirm` is a retry of
   a failed demand and not a replay.
-- `contract/manifest.yml` records `idempotent_writes: true` for
-  `payment_demands`, but the only replay lookup in the API is
-  `replay_refund_demand/3` on the refund create path. Payment demand creation
-  only *generates* a key when one is absent (`core/transactions.ex:350`). The
-  flag is unproven for `payment_demands` and should be verified before commit
-  10 relies on it.
+- `contract/manifest.yml` now records `idempotent_writes: false` for
+  `payment_demands` (FU-20), and the extractor no longer lists it, so
+  regenerating cannot restore the claim. Revisit only once the API implements
+  replay or rejection.
 - `Edge::PaymentMethod#last_four` redefines the reader generated from the
   contract, so loading the gem with warnings on prints
   `method redefined; discarding old last_four`. It exists only to carry

@@ -886,7 +886,7 @@ resources:
     custom_actions:
     - verb: PATCH
       path: "/{id}/confirm"
-    idempotent_writes: true
+    idempotent_writes: false
     sensitive_fields: []
     attributes:
       processor_state:

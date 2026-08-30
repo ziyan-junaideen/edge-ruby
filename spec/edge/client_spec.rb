@@ -539,30 +539,33 @@ RSpec.describe Edge::Client do
     end
 
     it "retries a write that explicitly opts in" do
-      stub = stub_request(:post, "https://api.tryedge.io/v2/payment_demands")
+      # refund_demands, not payment_demands: the refund replay contract is the
+      # one that was exercised against a running instance and held
+      # (docs/release-blockers.md, FU-20).
+      stub = stub_request(:post, "https://api.tryedge.io/v2/refund_demands")
              .to_return({ status: 500, body: "boom" }, { status: 201, body: "{}" })
 
-      no_sleep_client.post("v2/payment_demands", body: "{}", retriable: true)
+      no_sleep_client.post("v2/refund_demands", body: "{}", retriable: true)
 
       expect(stub).to have_been_requested.twice
     end
 
     it "replays the identical body and idempotency key" do
       body = '{"data":{"attributes":{"idempotency_key":"order-42","amount_cents":500}}}'
-      stub = stub_request(:post, "https://api.tryedge.io/v2/payment_demands")
+      stub = stub_request(:post, "https://api.tryedge.io/v2/refund_demands")
              .with(body: body)
              .to_return({ status: 500, body: "boom" }, { status: 201, body: "{}" })
 
-      no_sleep_client.post("v2/payment_demands", body: body, retriable: true)
+      no_sleep_client.post("v2/refund_demands", body: body, retriable: true)
 
       expect(stub).to have_been_requested.twice
     end
 
     it "does not retry a client error even when the operation opts in" do
-      stub = stub_request(:post, "https://api.tryedge.io/v2/payment_demands")
+      stub = stub_request(:post, "https://api.tryedge.io/v2/refund_demands")
              .to_return(status: 422, body: "{}")
 
-      expect { no_sleep_client.post("v2/payment_demands", body: "{}", retriable: true) }
+      expect { no_sleep_client.post("v2/refund_demands", body: "{}", retriable: true) }
         .to raise_error(Edge::InvalidRequestError)
       expect(stub).to have_been_requested.once
     end
@@ -575,12 +578,21 @@ RSpec.describe Edge::Client do
         .to raise_error(ArgumentError, /no replay contract/)
     end
 
-    it "allows opting in for a resource the contract marks replayable" do
-      %w[v2/payment_demands v2/refund_demands].each do |path|
-        stub_request(:post, "https://api.tryedge.io/#{path}").to_return(status: 201, body: "{}")
+    it "allows opting in for the one resource whose replay contract was exercised" do
+      stub_request(:post, "https://api.tryedge.io/v2/refund_demands")
+        .to_return(status: 201, body: "{}")
 
-        expect { no_sleep_client.post(path, body: "{}", retriable: true) }.not_to raise_error
-      end
+      expect { no_sleep_client.post("v2/refund_demands", body: "{}", retriable: true) }
+        .not_to raise_error
+    end
+
+    it "refuses a payment demand, which documents a replay contract it does not have" do
+      # The view calls idempotency_key "a unique value that prevents double
+      # charging". Against a running instance the key is dropped on create and
+      # two identical POSTs produced two demands, both 201 — so the contract
+      # records no replay for it and this must be refused (FU-20).
+      expect { no_sleep_client.post("v2/payment_demands", body: "{}", retriable: true) }
+        .to raise_error(ArgumentError, /no replay contract/)
     end
 
     it "rejects nonsensical retry settings rather than failing mid-retry" do

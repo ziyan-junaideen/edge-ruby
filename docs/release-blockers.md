@@ -613,3 +613,72 @@ exposed the structured form.
 
 Populate `detail` with something field-specific. `title` is defined as the
 generic summary; ten identical ones are within spec but carry no information.
+
+## FU-20 — `payment_demands.idempotency_key` does not prevent double charging
+
+**This is the most serious finding of the contract spike.** The field whose
+documented purpose is preventing a double charge does not prevent one.
+
+`Core.Transactions.Payment.idempotency_view_fields/1`
+(`transactions/payment.ex:902-907`) declares:
+
+```elixir
+idempotency_key: {:string, description: "A unique value that prevents double charging"}
+```
+
+Exercised against a running instance: two `POST /v2/payment_demands` requests,
+byte-identical, carrying one `idempotency_key`, produced **two payment
+demands**, both `201 Created`, both `processor_state` advancing independently.
+Neither response carried the key at all.
+
+Three things are missing, any one of which would have stopped it:
+
+1. **The key is never cast on create.** `create_changeset/3`
+   (`payment_demand.ex:137`) and `create_changeset_new/3` (`:88`) cast the
+   capture, charge, 3DS, addendum, AVS and settings groups, and never
+   `idempotency_key`. `idempotency_changeset/2` and
+   `idempotency_validation_changeset/1` exist in `payment.ex:308-322` and are
+   not called from either path. So the value is dropped and nothing is stored
+   to match a later request against.
+2. **There is no replay lookup.** `replay_refund_demand/3`
+   (`transactions.ex:897`) is the only one in the module, and it is on the
+   refund create path. The payment demand path (`transactions.ex:786-798`) is a
+   straight `Repo.insert`.
+3. **No unique constraint fires.** `unique_constraint(:idempotency_key)`
+   (`payment.ex:317`) is unnamed, so Ecto expects an index called
+   `payment_demands_idempotency_key_index`; refunds name a composite
+   `refund_demands_merchant_id_idempotency_key_index` instead. Whether the
+   index exists at all could not be determined from the repository —
+   `priv/core_repo/structure.sql` does not mention `idempotency_key` anywhere,
+   and no migration creates it. Empirically nothing rejected the duplicate.
+
+Refunds are unaffected and work correctly: one key, two requests, one record,
+the second reflecting the state it had reached since.
+
+### What the client does
+
+`contract/manifest.yml` records `payment_demands` as
+`idempotent_writes: false`, and `contract/bin/extract_manifest.rb` no longer
+lists it, so regenerating the manifest cannot quietly restore the claim. The
+existing guard then refuses `retriable: true` for payment demands with
+*"the API documents no replay contract for it, so a repeated request may act
+twice"* — which is now literally true.
+
+This is exactly what the manifest's own caveat was written for:
+*"idempotent_writes marks resources whose views document a replay contract. It
+does NOT authorise automatic retries; each operation must be exercised against
+sandbox first."* Payment demands documented the contract and failed the
+exercise.
+
+### Asked of the API
+
+Decide which of the two behaviours is intended and implement it fully:
+
+- **Replay**, like refunds — cast the key, add the unique index, and look up an
+  existing record before inserting; or
+- **Reject**, returning 409 on a reused key.
+
+Either is safe. What is not safe is documenting a key that prevents double
+charging, accepting it, discarding it, and charging twice. Until then no client
+can offer automatic retries on payment creation, and any integrator writing
+their own retry loop against this documentation will double-charge customers.

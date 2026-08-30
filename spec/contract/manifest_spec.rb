@@ -86,9 +86,15 @@ RSpec.describe "contract/manifest.yml" do
   end
 
   describe "write safety" do
-    it "marks only resources with a documented replay contract as idempotent" do
+    it "marks only the resource whose replay contract has been exercised" do
+      # refund_demands is the only one proven: one key, two POSTs, one record
+      # (docs/release-blockers.md, FU-20). payment_demands *documents* a replay
+      # contract — its view calls idempotency_key "a unique value that prevents
+      # double charging" — and does not have one, so it is excluded on the
+      # evidence rather than on the documentation. Exact, not a floor: adding a
+      # resource here must be a deliberate act backed by a sandbox run.
       idempotent = resources.select { |_, spec| spec["idempotent_writes"] }.keys
-      expect(idempotent).to contain_exactly("payment_demands", "refund_demands")
+      expect(idempotent).to contain_exactly("refund_demands")
     end
 
     it "does not claim idempotency for a resource that cannot be created" do

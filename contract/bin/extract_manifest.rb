@@ -64,8 +64,15 @@ SENSITIVE_ALWAYS = %w[authorization api_key secret_key token].freeze
 # generator warns about the difference rather than letting it pass unnoticed.
 #
 # Membership here still does not authorise automatic retries. Each operation
-# must be exercised against sandbox first.
-IDEMPOTENT = %w[payment_demands refund_demands].freeze
+# must be exercised against sandbox first — and payment_demands is why that
+# sentence is in this file. Its view documents idempotency_key as "a unique
+# value that prevents double charging", and exercising it against a running
+# instance showed the opposite: the key is never cast on create
+# (payment_demand.ex:137 and :88 both omit it), no replay lookup exists, and
+# two POSTs carrying one key produced two payment demands, both 201. It is
+# excluded on the evidence, not on the documentation.
+# See docs/release-blockers.md, FU-20.
+IDEMPOTENT = %w[refund_demands].freeze
 
 # ---------------------------------------------------------------------------
 # Elixir source parsing

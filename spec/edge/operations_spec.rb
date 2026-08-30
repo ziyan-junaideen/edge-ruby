@@ -435,6 +435,21 @@ RSpec.describe Edge::Operations do
           .to raise_error(ArgumentError, /Nothing replays a PATCH/)
       end
 
+      it "refuses a payment demand, whose replay contract does not exist" do
+        # The one finding in this area that would have moved money twice. The
+        # view documents idempotency_key as "a unique value that prevents
+        # double charging"; against a running instance the key is dropped on
+        # create and two identical POSTs produced two demands, both 201
+        # (docs/release-blockers.md, FU-20). Supplying a key must not make this
+        # look safe.
+        demand = Class.new(Edge::Resource) { contract "payment_demands" }
+
+        expect do
+          demand.create({ amount_cents: 1, idempotency_key: "key-1" },
+                        client: client, retriable: true)
+        end.to raise_error(ArgumentError, /cannot be retried/)
+      end
+
       it "names the missing replay contract, not the missing key" do
         # customers has no replay contract, so asking the caller for an
         # idempotency key would send them to add one that changes nothing.

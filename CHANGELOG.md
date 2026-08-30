@@ -42,6 +42,11 @@ from 1.0.0; until then the public API may change in any release.
 
 ### Changed
 
+- `payment_demands` is no longer marked `idempotent_writes`, so `retriable:`
+  refuses it. Its view documents `idempotency_key` as "a unique value that
+  prevents double charging"; exercised against a running instance, the key is
+  dropped on create and two identical requests produced two payment demands.
+  See docs/release-blockers.md, FU-20. Refunds are unaffected and proven.
 - A validation error now names the field it is about. The API answers a
   malformed create with a batch of error objects whose titles are identical and
   whose pointers are not — ten of them, every one reading `can't be blank` —
