@@ -23,6 +23,16 @@ module Edge
 
     attr_accessor :api_key, :timeout, :open_timeout, :max_auto_pages, :app_info, :connection,
                   :instrumenter, :retry_policy
+
+    # Whether names are checked against contract/manifest.yml before a request
+    # is sent: filter, sort and include names on a read, attribute names on a
+    # write. Off by default, because the manifest is generated and one that had
+    # fallen behind the server would refuse a field that really does exist.
+    #
+    # Worth turning on in development, where the alternative feedback is a
+    # mistyped filter fetching an entire table, or a mistyped attribute
+    # returning 200 and changing nothing.
+    attr_accessor :strict
     attr_reader :base_url, :max_retries, :retry_base_delay, :max_retry_delay
 
     def initialize
@@ -38,6 +48,7 @@ module Edge
       @retry_policy = nil
       @app_info = nil
       @connection = nil
+      @strict = false
     end
 
     # A negative delay makes Kernel#sleep raise, turning a recoverable blip

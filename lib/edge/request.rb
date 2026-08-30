@@ -34,5 +34,16 @@ module Edge
     def retriable?
       retriable.nil? ? safe? : retriable
     end
+
+    # A Struct prints every member, and `body` carries whatever the caller is
+    # writing — a customer's email, name, phone and address on a create. This
+    # object is live in Transport's stack frames, so any exception reporter
+    # that renders local variables would ship the lot. Headers carry the bearer
+    # token, and the query string carries filter values. None of it is printed.
+    def inspect
+      "#<#{self.class.name} #{verb.to_s.upcase} #{Redaction.scrub_query(url.to_s)} " \
+        "bytes=#{body.to_s.bytesize} retriable=#{retriable?}>"
+    end
+    alias_method :to_s, :inspect
   end
 end

@@ -346,3 +346,49 @@ Convenient in practice — one request gets the whole record — but a generic
 JSON:API client that follows `self` expecting identifiers will misparse it. The
 Ruby client reads the shape from the response rather than the link name, so it
 works either way.
+
+## FU-13 — Relationship writes: null linkage 500s, and to-many dispatch is broken
+
+Two separate faults on the write path, both reached from a well-formed
+JSON:API request.
+
+**Unsetting a to-one is unimplemented.** `ept/lib/phoenix_jsonapi/conn.ex:256`
+carries its own note:
+
+```elixir
+# TODO: Handle `%{"data" => null}`
+defp fetch_relationship({key, %{"data" => %{"id" => id}}}, query, view)
+```
+
+The clauses cover a map with a binary `id` and a list. `nil` matches neither,
+so `{"data": null}` — JSON:API's spelling of "this relationship is now empty" —
+raises `FunctionClauseError` and returns 500. `must_properties_plug.ex:108`
+waves it through first, so nothing rejects it politely.
+
+**To-many linkage is dispatched one id at a time to callbacks that expect a
+list.** `conn.ex:268-287` handles `%{"data" => [...]}` by calling
+`query.(key, related_view, id)` once per element, with a **binary** id. But
+`customers_controller.ex:110` declares its callback as:
+
+```elixir
+:addresses, related_view, ids when is_atom(related_view) and is_list(ids) ->
+```
+
+A binary is not a list, so no clause matches: `FunctionClauseError`, 500. This
+affects `customers.addresses` and `customers.payment_demands` — the only
+writable to-many relationships on the resources this client currently covers.
+Controllers whose callback takes a binary id, such as
+`merchant_tokens_controller.ex:120`, work correctly with the same dispatcher.
+
+### What the client does
+
+Refuses null linkage with an `ArgumentError` naming this entry, rather than
+sending a request that becomes a 500. Builds to-many linkage as the array
+JSON:API specifies and as `conn.ex:268` reads, because that is correct and
+works wherever the controller callback matches — the mismatch is per-controller
+and not something a client can detect.
+
+### Asked of the API
+
+Add the `nil` clause, and settle whether the related-data callback receives one
+id or a list. Either convention is fine; having both is what produces the 500.

@@ -59,6 +59,7 @@ module Edge
 
         define_attribute_readers(spec["attributes"] || {})
         define_relationship_readers(spec["relationships"] || {})
+        define_operations(spec["operations"] || [])
         # Later declarations win, deliberately: Rails reloads a class under the
         # same name on every request in development, and refusing or warning
         # about the second would make the gem unusable there.
@@ -147,6 +148,24 @@ module Edge
       end
 
       def constant_name(name) = name.split("_").map(&:capitalize).join
+
+      # Only the operations the endpoint actually has. `PaymentMethod.create`
+      # must raise NoMethodError rather than exist and return a 404, which
+      # would read as a server problem instead of a capability the API does
+      # not have.
+      def define_operations(operations)
+        extend Operations::Support
+        extend Operations::Body
+
+        operations.each do |operation|
+          mod = Operations::MODULES.fetch(operation) do
+            raise Error, "#{@contract_name} declares the operation #{operation.inspect}, which " \
+                         "this client does not know how to build. Regenerate the manifest, or " \
+                         "add it to Edge::Operations::MODULES."
+          end
+          extend mod
+        end
+      end
 
       # A relationship reader returns an Edge::Relationship, always — never the
       # related record and never nil. The API sends resource linkage for only
