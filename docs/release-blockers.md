@@ -170,11 +170,13 @@ This is the reason `contract/manifest.yml` is hand-derived and the drift check
 cannot validate write coverage. Documenting request bodies would make the whole
 contract process meaningfully stronger.
 
-## FU-2 — Invalid filters and sorts are silently dropped
+## FU-2 — Invalid filters are silently dropped
 
 Rather than rejected. On today's unpaginated production this turns one typo into
 a full-collection fetch. Server-side validation would be far better than
 client-side guessing. See `docs/pagination.md`.
+
+Sorts and includes behave differently again, and worse: see FU-10.
 
 ## FU-3 — The OpenAPI artifact is untracked and unreproducible
 
@@ -213,3 +215,74 @@ expose `mode` only for recognised prefixes rather than guessing.
 `meters`, `meter_ticks`, `meter_rate_cards`, `meter_notifications` and
 `meter_digests` are the only `/v1` paths. If they are internal, they should not
 enter this client's public surface at 1.0.
+
+## FU-8 — `processor_details` serializes an attribute named `type`
+
+`ept/lib/core_http/views/processor_details.ex:15` lists `type:` among `fields()`,
+so the serialized resource object carries both a top-level `"type":
+"processor_details"` and an `attributes.type` holding the enum value.
+
+JSON:API 1.1 §5.2 forbids exactly this: "a resource object's attributes and its
+relationships are collectively called its *fields* [and] a resource can not have
+an attribute or relationship named `type` or `id`." The reason is the collision
+every client then has to work around.
+
+### What the client does
+
+`Edge::Resource#type` is the JSON:API type, as it must be everywhere else; the
+attribute is read as `detail["type"]` and is listed in
+`ProcessorDetail.shadowed_attributes`. `#to_h` returns the attributes without
+folding identity over them, so the value is not destroyed. A spec pins the set
+of shadowed names across the whole manifest, so a second collision fails the
+build rather than silently returning the wrong thing.
+
+### Asked of the API
+
+Rename the field — `processor_type`, or `kind`. Breaking, but it is already
+breaking every spec-compliant client.
+
+## FU-9a — A relationship can only be filtered when it is a belongs-to
+
+`relationship_filter/5` (`parameters.ex:406-427`) resolves the association and
+matches only `Ecto.Association.BelongsTo`; every other kind falls through to
+`_association -> :error` at `:425`. So `filter[payment_demands]=<id>` on a
+merchant — and `filter[payment_demands.id]`, which takes the same path
+(`:382`) — is dropped, returning every merchant.
+
+Seventeen relationships across the manifest are to-many. The client refuses
+these in strict mode, using the cardinality the manifest records. It cannot
+catch a `has_one`, which is cardinality one but still not a belongs-to.
+
+Filtering the collection the other way round works, so this is a documentation
+gap as much as a behavioural one — but a dropped filter over an unpaginated
+collection is not a good way to discover it.
+
+## FU-9 — Comparison operators are unreachable across relationships
+
+`ept/lib/phoenix_jsonapi/filters.ex:107-124` implements `gt`/`lt`/`gte`/`lte`
+for `:relationship_attribute` filters, joining the chain and comparing on the
+related record.
+
+Nothing can reach it. `parameters.ex:272` only strips a comparison suffix from a
+**single-segment** key; `extract_operator/1` returns `{:ok, :eq, path}` for
+anything longer. So `filter[merchant.created_at_gte]` is parsed as equality on a
+field named `created_at_gte`, which does not exist, and the filter is dropped —
+returning the whole collection rather than an error.
+
+The client raises on this shape rather than sending it. Either extend
+`extract_operator/1` to the last segment of a path, or delete the dead clauses
+so the next reader does not assume the feature works.
+
+## FU-10 — An unknown `sort` or `include` field fails non-deterministically
+
+`jsonapi_parser_plug.ex:129` and `:153` convert every `include`, `sort` and
+`fields` segment with `String.to_existing_atom/1` and no rescue, before
+`normalized_sorts/4` gets the chance to drop unknown names.
+
+So the outcome depends on whether the mistyped word happens to exist as an atom
+anywhere in the running VM: if it does, the filter is silently dropped; if it
+does not, the plug raises `ArgumentError`. Same request, different behaviour on
+different deploys.
+
+Rescuing at the plug boundary would at least make it consistently silent, and
+returning a JSON:API error would be better than either.

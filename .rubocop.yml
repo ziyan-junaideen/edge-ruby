@@ -37,6 +37,13 @@ Metrics/MethodLength:
   Exclude:
     - "contract/bin/*"
 
+# Keyword arguments are named at the call site, so a long list of them does not
+# create the ordering hazard this cop exists to catch. Query takes eight, one
+# per JSON:API query parameter, and collapsing them into an options hash would
+# lose the arity checking that keeps a typo from being silently ignored.
+Metrics/ParameterLists:
+  CountKeywordArgs: false
+
 Style/Documentation:
   Enabled: true
 
@@ -56,6 +63,12 @@ RSpec/MultipleExpectations:
 Naming/FileName:
   Exclude:
     - "lib/edge-ruby.rb"
+
+# The module is Edge::JSONAPI but the directory is json_api, matching the file
+# layout under lib/. Spec paths mirror lib paths.
+RSpec/SpecFilePathFormat:
+  CustomTransform:
+    JSONAPI: json_api
 
 # These describe artefacts (a generated YAML contract, the built gem), not
 # classes.
