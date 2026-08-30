@@ -17,9 +17,10 @@ Consequences a caller has to know about:
 
 - Listing a large collection fetches all of it — a real memory and latency
   hazard on a busy merchant. Filter aggressively.
-- Invalid filters and sorts are **dropped rather than rejected** by the server.
-  Combined with the above, a single typo in a filter key turns a narrow query
-  into a full-collection fetch.
+- Invalid filters are **dropped rather than rejected** by the server. Combined
+  with the above, a single typo in a filter key turns a narrow query into a
+  full-collection fetch. `Edge::Query` refuses the shapes that would cause it;
+  see docs/release-blockers.md, FU-2 and FU-10.
 - `page[*]` parameters are **parsed and then ignored**
   (`jsonapi_parser_plug.ex:132` builds a `pagination` map that nothing reads).
   So asking for `page[limit]=10` today returns everything, with no error to say
@@ -91,3 +92,29 @@ absolute URL on another origin would be handed the bearer token. So:
 - Cross-origin `links.next`: refused, and the token is not sent.
 - A cycle among links: terminates.
 - `break` from inside `auto_paging_each`: stops fetching immediately.
+
+## What `Edge::ListObject` does with all this
+
+`#each` covers one page. `#auto_paging_each` walks them all. Today those are the
+same thing, because there is only ever one page; they stop being the same when
+the cursor work lands, and the distinction is in the API now so that no caller
+has to change later.
+
+Walking pages safely matters more than it might look, because a pagination link
+is a URL chosen by the response and followed with a bearer token attached:
+
+- Every link is resolved and origin-checked before it is followed. A
+  cross-origin `next` raises `Edge::InsecureRedirectError` rather than handing
+  the credential to whatever host the response named. The check lives in
+  `Client#url_for` and nowhere else — two copies of a security rule eventually
+  disagree.
+- **Every** visited URL is remembered, not just the previous one, so a server
+  answering `A -> B -> A` terminates instead of spinning. A repeated cursor
+  **raises**. Stopping quietly would hand back a partial collection that looks
+  exactly like a complete one, and the caller could not tell which records went
+  missing.
+- `max_auto_pages` is a second guard, for an unbounded chain of distinct URLs
+  rather than a cycle. It also raises, and it comes from
+  `Configuration#max_auto_pages` (default 1000) rather than from a constant of
+  its own — a second copy of the limit is how the configured setting came to do
+  nothing at all.

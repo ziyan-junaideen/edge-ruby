@@ -23,6 +23,9 @@ require_relative "edge/query/values"
 require_relative "edge/query/path_checker"
 require_relative "edge/query/filters"
 require_relative "edge/query"
+require_relative "edge/relationship"
+require_relative "edge/list_object"
+require_relative "edge/resource/definition"
 require_relative "edge/resource"
 
 # An unofficial Ruby client for the Edge Payment Technologies HTTP API.

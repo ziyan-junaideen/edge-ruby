@@ -242,6 +242,87 @@ RSpec.describe Edge::Resource do
     end
   end
 
+  describe ".for" do
+    it "returns the class that declared the contract" do
+      expect(described_class.for("customers")).to be(CustomerResource)
+    end
+
+    it "resolves to the same registry from a subclass" do
+      # `@registry ||= {}` would have given each subclass its own empty hash,
+      # so PaymentDemand.for("customers") would quietly answer with the
+      # attribute-less base class.
+      subclass = Class.new(CustomerResource)
+
+      expect(subclass.for("customers")).to be(CustomerResource)
+      expect(subclass.registry).to be(described_class.registry)
+    end
+
+    it "generates a class from the manifest when nothing has claimed a name" do
+      # Otherwise a relationship would resolve to a bare Edge::Resource with no
+      # readers at all, and `demand.payer.fetch.email` — the example in the
+      # docs — would raise NoMethodError as shipped.
+      described_class.registry.delete("merchants")
+      generated = described_class.for("merchants")
+
+      expect(generated).to be < described_class
+      expect(generated.contract_name).to eq("merchants")
+      expect(generated.new({ "attributes" => { "business_name" => "Acme" } }).business_name)
+        .to eq("Acme")
+    end
+
+    it "gives a generated class a name, so inspect and backtraces say what it is" do
+      described_class.registry.delete("merchants")
+
+      expect(described_class.for("merchants").name)
+        .to eq("Edge::Resource::Generated::Merchants")
+    end
+
+    it "returns the same generated class every time" do
+      # Two lookups held apart, not one expression evaluated twice: generating
+      # a fresh class per call would break `is_a?` and `==` for every caller
+      # holding one.
+      described_class.registry.delete("merchants")
+      first = described_class.for("merchants")
+      second = described_class.for("merchants")
+
+      expect(first).to be(second)
+    end
+
+    it "falls back to the base class for a name the manifest does not have" do
+      expect(described_class.for("unicorns")).to be(described_class)
+    end
+  end
+
+  describe "shadowed relationships" do
+    it "are recorded apart from attributes, and stay reachable" do
+      # No collision exists in today's manifest, so this builds one. Without
+      # it the assertion below compares two empty lists and would pass however
+      # the code routed a collision — including into shadowed_attributes,
+      # whose documented fallback is `#[]`, which reads attributes and would
+      # never find a relationship.
+      klass = Class.new(described_class) do
+        def merchant = :already_taken
+        contract "customers"
+      end
+
+      expect(klass.shadowed_relationships).to eq(["merchant"])
+      expect(klass.shadowed_attributes).to be_empty
+      expect(klass.new({}).merchant).to eq(:already_taken)
+      expect(klass.new({}).relationship(:merchant)).to be_a(Edge::Relationship)
+    end
+
+    it "are absent from the manifest as it stands" do
+      # `#[]` reads attributes. A relationship whose name is taken is reachable
+      # only through `#relationship(name)`, so reporting it as a shadowed
+      # attribute would send the reader somewhere it will find nothing.
+      shadowed = Edge::Contract.resources.keys.to_h do |name|
+        [name, Class.new(described_class) { contract(name) }.shadowed_relationships]
+      end
+
+      expect(shadowed.reject { |_, names| names.empty? }).to eq({})
+    end
+  end
+
   describe "every resource in the manifest" do
     # A generated manifest gains attributes without anyone reading them. An
     # attribute named `hash`, `send` or `class` would take a reader's place and

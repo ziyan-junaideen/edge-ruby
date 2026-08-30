@@ -286,3 +286,63 @@ different deploys.
 
 Rescuing at the plug boundary would at least make it consistently silent, and
 returning a JSON:API error would be better than either.
+
+## FU-11 — A to-many relationship carries no resource linkage, ever
+
+`ept/lib/phoenix_jsonapi/resource.ex:130-136` builds every to-many relationship
+as links only:
+
+```elixir
+{:many, _relationship} ->
+  Map.put(aggregate, name, %PhoenixJSONAPI.Relationship{
+    links: %{self: URI.to_string(URI.append_path(uri, "/#{record.id}/relationships/#{name}"))}
+  })
+```
+
+There is no `data` member, and asking for the records with `include=` does not
+add one — the includes change what lands in the document's `included` array, not
+what the relationship object says.
+
+JSON:API calls this **full linkage** and requires it: every resource in
+`included` must be identified by at least one resource identifier object
+elsewhere in the same document. Without it, a client receiving
+`GET /v2/customers?include=addresses` gets a pile of addresses and no way to
+tell which customer each belongs to. Matching by type would give every customer
+every address.
+
+The same clause covers two more cases at `:173-181`, where the `data` member is
+commented out in the source: a belongs-to whose foreign key is null, and a
+has-one. So an **unset** to-one and an **unlinked** to-one are the same bytes,
+and JSON:API's distinction between `"data": null` and an absent `data` member is
+unavailable.
+
+### What the client does
+
+`Relationship#loaded?` reports whether linkage arrived, and is false for every
+to-many. `#resource` resolves from `included` for a to-one only. `#fetch` is the
+answer for everything else, and is spelled as the request it makes. The client
+does not guess.
+
+### Asked of the API
+
+Emit `data` for to-many relationships, at least when the relationship is
+included; and emit `"data": null` for an unset to-one, so that "no payer" and
+"not told" stop being the same response.
+
+## FU-12 — A relationship link returns the resource, not the linkage
+
+`ept/lib/phoenix_jsonapi/routing.ex:96-108` mounts
+`GET /v2/<route>/:id/relationships/<name>` and renders it with the ordinary
+`:show` or `:index` template. `test/core_http/controllers/consumer_addresses_controller_test.exs:196-211`
+asserts the result: a full resource object, with `attributes`, `relationships`
+and `links`.
+
+JSON:API distinguishes two links here. A relationship's `self` link must return
+**resource linkage** — identifier objects. The full record is what the `related`
+link returns. Edge advertises the URL as `self` and returns the `related`
+payload, and emits no `related` link at all.
+
+Convenient in practice — one request gets the whole record — but a generic
+JSON:API client that follows `self` expecting identifiers will misparse it. The
+Ruby client reads the shape from the response rather than the link name, so it
+works either way.

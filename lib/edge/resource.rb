@@ -21,105 +21,18 @@ module Edge
   # succeeds and a String when it does not, and a reader whose class depends on
   # the data is worse than one that is merely inconvenient.
   class Resource
-    class << self
-      # The manifest key this class maps to: the route name, not the JSON:API
-      # type. They differ (docs/release-blockers.md, RB-3).
-      #
-      # Inherited, like the readers themselves. A subclass — a gateway
-      # decorating PaymentDemand, say — keeps every generated reader, so it
-      # must keep the metadata that describes them too, or
-      # `unknown_attributes` reports the entire attribute set as drift.
-      def contract_name = @contract_name || from_superclass(:contract_name)
+    # Classes built from the manifest for resources nothing else has claimed.
+    # Named rather than anonymous so that `inspect` and backtraces say what
+    # they are.
+    Generated = Module.new
 
-      # Attribute names the contract knows about, in manifest order.
-      def attribute_names
-        @attribute_names ||= from_superclass(:attribute_names)&.dup || []
-      end
+    # Mutable by design: this is the live map from manifest name to class, and
+    # `contract` writes to it as classes load.
+    REGISTRY = {} # rubocop:disable Style/MutableConstant
+    REGISTRY_LOCK = Monitor.new
+    private_constant :REGISTRY_LOCK
 
-      # Attributes the contract records but which could not be given a reader
-      # because the name is already taken — by Object, or by this class. They
-      # stay reachable through `#[]`.
-      #
-      # There is one today: `processor_details` serializes an attribute named
-      # `type` (`views/processor_details.ex:15`), which JSON:API 1.1 §5.2
-      # forbids precisely because it collides with the resource object's own
-      # `type`. So `ProcessorDetail#type` is the JSON:API type, and the
-      # attribute is read as `detail["type"]`. See docs/release-blockers.md,
-      # FU-8.
-      #
-      # The suite pins this list for every resource in the manifest, so a new
-      # collision is a test failure here rather than a puzzling nil in
-      # someone's production logs.
-      def shadowed_attributes
-        @shadowed_attributes ||= from_superclass(:shadowed_attributes)&.dup || []
-      end
-
-      def json_api_type = contract_spec&.fetch("json_api_type", nil) || contract_name
-
-      # Deliberately not called `inherited`: that is Ruby's own hook for "a
-      # subclass was just created", and shadowing it with a different arity
-      # breaks subclassing outright.
-      def from_superclass(name)
-        superclass.public_send(name) if superclass.respond_to?(name)
-      end
-
-      def contract_spec = contract_name && Contract.resource(contract_name)
-
-      # Declares the manifest entry and defines the attribute readers.
-      def contract(name)
-        @contract_name = name.to_s
-        spec = Contract.resource(@contract_name)
-        raise ArgumentError, "#{@contract_name} is not in contract/manifest.yml" unless spec
-
-        define_attribute_readers(spec["attributes"] || {})
-      end
-
-      # Builds one resource from a document's primary data, or nil when the
-      # document carried none. A `null` data member is a real answer — an unset
-      # to-one relationship — and is reported as nil rather than as an error.
-      def from(document)
-        payload = document.data
-        return nil unless payload.is_a?(Hash)
-
-        new(payload, document: document)
-      end
-
-      # Builds the resources in a collection document. Non-Hash entries are
-      # skipped rather than raising: a malformed element should cost its own
-      # record, not the whole page.
-      def list_from(document)
-        # Not `Array(document.data)`: Kernel#Array turns a Hash into its pairs,
-        # so a single-resource document would come back as a list of two-element
-        # arrays rather than as nothing.
-        return [] unless document.collection?
-
-        document.data.grep(Hash).map { |payload| new(payload, document: document) }
-      end
-
-      private
-
-      def define_attribute_readers(attributes)
-        attributes.each_key do |name|
-          attribute_names << name
-
-          if reader_taken?(name)
-            shadowed_attributes << name
-            next
-          end
-
-          define_method(name) { self[name] }
-        end
-      end
-
-      # `respond_to?` is not enough: it misses private methods, and defining
-      # `send` or `freeze` over one would break the object in ways that surface
-      # a long way from here.
-      def reader_taken?(name)
-        return true unless name.match?(/\A[a-z_][a-zA-Z0-9_]*\z/)
-
-        method_defined?(name) || private_method_defined?(name)
-      end
-    end
+    extend Definition
 
     # The document this resource was parsed out of, when it came from one.
     # Carries the `included` records and the top-level `links` and `meta`.
@@ -130,9 +43,14 @@ module Edge
     # when you need the truth, and the one place a secret can still be read.
     attr_reader :raw
 
-    def initialize(payload, document: nil)
+    # The client this resource came from, used by `Relationship#fetch`. Never
+    # used to fetch anything implicitly.
+    attr_reader :client
+
+    def initialize(payload, document: nil, client: nil)
       @raw = payload.is_a?(Hash) ? payload : {}
       @document = document
+      @client = client
     end
 
     def id = raw["id"]
@@ -145,6 +63,15 @@ module Edge
 
     def relationships
       @relationships ||= (raw["relationships"].is_a?(Hash) ? raw["relationships"] : {})
+    end
+
+    # One relationship by name, whether or not the contract knows about it.
+    # Always an Edge::Relationship, even for a name the server did not send —
+    # asking about a relationship that is absent is not an error, and the
+    # answer is a relationship that reports itself as unloaded.
+    def relationship(name)
+      (@relationship_objects ||= {})[name.to_s] ||=
+        Relationship.new(name, relationships[name.to_s], owner: self)
     end
 
     def links = @links ||= (raw["links"].is_a?(Hash) ? raw["links"] : {})

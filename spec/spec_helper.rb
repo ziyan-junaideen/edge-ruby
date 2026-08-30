@@ -23,6 +23,16 @@ RSpec.configure do |config|
   config.example_status_persistence_file_path = ".rspec_status"
   config.disable_monkey_patching!
   config.warnings = true
+  # Declaring a contract registers the class, so that a relationship pointing
+  # at a resource resolves to it. Examples that define throwaway resource
+  # classes would otherwise leave them in that registry for every later
+  # example, and the order is random.
+  config.around do |example|
+    snapshot = Edge::Resource.registry.dup
+    example.run
+    Edge::Resource.registry.replace(snapshot)
+  end
+
   config.order = :random
   Kernel.srand config.seed
 end

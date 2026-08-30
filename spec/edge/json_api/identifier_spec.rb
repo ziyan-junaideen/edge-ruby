@@ -17,9 +17,16 @@ RSpec.describe Edge::JSONAPI::Identifier do
 
     it "is nil for anything that is not an identifier" do
       expect(described_class.from(nil)).to be_nil
-      expect(described_class.from("type" => "customers")).to be_nil
-      expect(described_class.from("id" => "cus_1")).to be_nil
+      expect(described_class.from({ "type" => "customers" })).to be_nil
+      expect(described_class.from({ "id" => "cus_1" })).to be_nil
       expect(described_class.from("not a hash")).to be_nil
+    end
+
+    it "is nil for to-many linkage, which names no single record" do
+      # Relationship#resource relies on this: an array of identifiers has no
+      # one record to resolve to, and returning the first would be wrong in a
+      # way nothing downstream could detect.
+      expect(described_class.from([{ "type" => "customers", "id" => "cus_1" }])).to be_nil
     end
   end
 
