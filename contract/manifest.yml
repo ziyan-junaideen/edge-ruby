@@ -1,6 +1,7 @@
 ---
 generated_by: contract/bin/extract_manifest.rb
-generated_from: Phoenix views + controllers; enum values and routes from contract/openapi.json
+generated_from: Phoenix views and controllers; routes, and enum values that could
+  not be resolved from source, come from contract/openapi.json
 caveats:
 - 'openapi.json describes responses only. Every write has requestBody: null, so writable
   ATTRIBUTES are not derivable and are not asserted here. Relationship writeability

@@ -1,0 +1,31 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+
+[tools]
+ruby = '3.4.9'
+
+[tasks.deps]
+description = "Installs dependencies"
+run = "bundle install"
+
+[tasks.spec]
+description = "Runs the test suite"
+run = "bundle exec rspec"
+
+[tasks.lint]
+description = "Runs RuboCop"
+run = "bundle exec rubocop"
+
+[tasks.format]
+description = "Autocorrects what RuboCop can"
+run = "bundle exec rubocop --autocorrect"
+
+[tasks.check]
+description = "Everything CI runs"
+depends = ["spec", "lint"]
+
+[tasks."contract:sync"]
+description = "Regenerates contract/manifest.yml from an ept checkout"
+usage = '''
+arg "<ept>" help="Path to the edge/ept checkout"
+'''
+run = 'contract/bin/extract_manifest.rb {{arg(name="ept")}} > contract/manifest.yml'

@@ -1,0 +1,65 @@
+plugins:
+  - rubocop-rake
+  - rubocop-rspec
+
+AllCops:
+  TargetRubyVersion: 3.2
+  NewCops: enable
+  Exclude:
+    - "vendor/**/*"
+    - "tmp/**/*"
+
+# Prose in this repository explains why the API behaves as it does; those
+# comments are worth their length.
+Layout/LineLength:
+  Max: 100
+  AllowedPatterns:
+    - "^\\s*#"
+
+Metrics/BlockLength:
+  Exclude:
+    - "spec/**/*"
+    - "*.gemspec"
+    - "contract/bin/*"
+
+# The contract extractor is a single-purpose script that parses Elixir. Its
+# procedural shape is the clearest way to express a parse-and-report pipeline.
+Metrics/AbcSize:
+  Exclude:
+    - "contract/bin/*"
+Metrics/CyclomaticComplexity:
+  Exclude:
+    - "contract/bin/*"
+Metrics/PerceivedComplexity:
+  Exclude:
+    - "contract/bin/*"
+Metrics/MethodLength:
+  Exclude:
+    - "contract/bin/*"
+
+Style/Documentation:
+  Enabled: true
+
+# Double quotes throughout, matching the prevailing convention in Ruby gems.
+Style/StringLiterals:
+  EnforcedStyle: double_quotes
+Style/StringLiteralsInInterpolation:
+  EnforcedStyle: double_quotes
+
+RSpec/ExampleLength:
+  Max: 15
+RSpec/MultipleExpectations:
+  Max: 5
+
+# The bundler shim must be named for the gem, not the module, so that
+# `gem "edge-ruby"` resolves without a `require:` option.
+Naming/FileName:
+  Exclude:
+    - "lib/edge-ruby.rb"
+
+# These describe artefacts (a generated YAML contract, the built gem), not
+# classes.
+RSpec/DescribeClass:
+  Exclude:
+    - "spec/contract/**/*"
+    - "spec/edge/packaging_spec.rb"

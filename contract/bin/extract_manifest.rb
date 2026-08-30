@@ -139,11 +139,13 @@ def parse_fields(body)
     # `{:string, description: …}`
     # `{{:array, :string}, …}`
     # `{{:array, {:schema, CoreHTTP.Schemas.PaymentLineItem}}, …}`
+    array_of = spec.match(
+      /\A\{\s*\{\s*:array\s*,\s*(?::(?<atom>[a-z_]+)|\{\s*:schema\s*,\s*(?<schema>[A-Za-z0-9_.]+))/
+    )
+
     type =
-      if (inner = spec[/\A\{\s*\{\s*:array\s*,\s*:([a-z_]+)\s*\}/, 1])
-        "array[#{inner}]"
-      elsif (inner = spec[/\A\{\s*\{\s*:array\s*,\s*\{\s*:schema\s*,\s*([A-Za-z0-9_.]+)\s*\}/, 1])
-        "array[#{inner}]"
+      if array_of
+        "array[#{array_of[:atom] || array_of[:schema]}]"
       elsif spec.start_with?("{")
         spec[/\A\{\s*:([a-z_]+)/, 1]
       else
@@ -170,14 +172,13 @@ end
 def module_path(mod)
   return nil unless mod
 
-  File.join(EPT, "lib", mod.split(".").map do |segment|
-    segment.gsub(/([a-z0-9])([A-Z])/, '\1_\2').downcase
-  end.join("/") + ".ex")
+  segments = mod.split(".").map { |segment| segment.gsub(/([a-z0-9])([A-Z])/, '\1_\2').downcase }
+  File.join(EPT, "lib", "#{segments.join("/")}.ex")
 end
 
 # Every Elixir file under lib/core, searched when an enum accessor is not in
 # the module it is called on. Built once; the tree is small.
-ENUM_SOURCES = Dir.glob(File.join(EPT, "lib/core/**/*.ex")).sort.freeze
+ENUM_SOURCES = Dir.glob(File.join(EPT, "lib/core/**/*.ex")).freeze
 
 # Resolves `Core.Transactions.RefundDemand.reasons()` to the literal list behind
 # the `@reasons` module attribute it returns. The openapi snapshot also carries
@@ -236,7 +237,11 @@ def enum_ambiguity(reference)
   definers = ENUM_SOURCES.select { |path| defines_accessor?(File.read(path), function) }
   return nil if definers.size < 2
 
-  definers.map { |path| path.sub("#{EPT}/", "") }
+  # Sorted because this list is interpolated into a warning that is written
+  # into the committed manifest. Dir.glob has sorted by default since Ruby 3.0,
+  # but the manifest's stability should not rest on that: sorting here means
+  # the output is identical no matter how the file list was produced.
+  definers.map { |path| path.sub("#{EPT}/", "") }.sort
 end
 
 def defines_accessor?(source, function)
@@ -272,7 +277,6 @@ def enum_values(source, function)
   nil
 end
 
-
 # `fields()` bodies are often a literal map piped through `*_view_fields/1`
 # helpers that Map.merge further attributes in. Follow those pipes.
 def resolve_field_helpers(source, warnings, filename)
@@ -285,7 +289,8 @@ def resolve_field_helpers(source, warnings, filename)
     return {}
   end
 
-  pipeline.scan(/\|>\s*([A-Za-z0-9_.]+)\.([a-z_]+)\(\)/).each_with_object({}) do |(mod, function), merged|
+  pipes = pipeline.scan(/\|>\s*([A-Za-z0-9_.]+)\.([a-z_]+)\(\)/)
+  pipes.each_with_object({}) do |(mod, function), merged|
     path = module_path(mod)
     unless path && File.exist?(path)
       warnings << "#{filename}: cannot resolve #{mod}.#{function}/1"
@@ -357,7 +362,8 @@ openapi.fetch("paths").each do |path, verbs|
   match = path.match(%r{\A/(v\d+)/([a-z_]+)})
   next unless match
 
-  version, type = match[1], match[2]
+  version = match[1]
+  type = match[2]
   entry = routes[type]
   entry["api_version"] = version
 
@@ -372,7 +378,10 @@ openapi.fetch("paths").each do |path, verbs|
     in ["patch", "/{id}"] then entry["operations"] << "update"
     in ["delete", "/{id}"] then entry["operations"] << "delete"
     else
-      entry["custom_actions"] << { "verb" => verb.upcase, "path" => tail } if tail.match?(%r{\A/\{id\}/(?!relationships/)})
+      if tail.match?(%r{\A/\{id\}/(?!relationships/)})
+        entry["custom_actions"] << { "verb" => verb.upcase,
+                                     "path" => tail }
+      end
     end
   end
 end
@@ -435,8 +444,8 @@ Dir.children(VIEWS).sort.each do |filename|
     live = spec["values"] || resolve_enum(spec["enum_source"])
 
     if (ambiguous = enum_ambiguity(spec["enum_source"]))
-      warnings << "#{filename}: #{name} accessor #{spec['enum_source']} is defined in " \
-                  "#{ambiguous.join(' and ')}; not resolving from source"
+      warnings << "#{filename}: #{name} accessor #{spec["enum_source"]} is defined in " \
+                  "#{ambiguous.join(" and ")}; not resolving from source"
     end
 
     if live
@@ -448,7 +457,9 @@ Dir.children(VIEWS).sort.each do |filename|
     elsif snapshot
       spec["values"] = snapshot
       spec["values_from"] = "openapi-snapshot"
-      warnings << "#{filename}: enum #{name} resolved from the snapshot only" if spec["type"] == "enum"
+      if spec["type"] == "enum"
+        warnings << "#{filename}: enum #{name} resolved from the snapshot only"
+      end
     elsif spec["type"] == "enum"
       warnings << "#{filename}: enum #{name} has no resolvable values"
     end
@@ -469,7 +480,9 @@ Dir.children(VIEWS).sort.each do |filename|
 
   sensitive = (SENSITIVE[route_name] || []) & fields.keys
   missing = (SENSITIVE[route_name] || []) - fields.keys
-  warnings << "#{filename}: sensitive fields not present: #{missing.join(', ')}" unless missing.empty?
+  unless missing.empty?
+    warnings << "#{filename}: sensitive fields not present: #{missing.join(", ")}"
+  end
 
   # The idempotency list is hand-maintained; the field's presence is not. Flag
   # any drift between them in both directions.
@@ -496,11 +509,12 @@ Dir.children(VIEWS).sort.each do |filename|
 end
 
 missing_views = routes.keys - resources.keys
-warnings << "routed but no view found: #{missing_views.join(', ')}" unless missing_views.empty?
+warnings << "routed but no view found: #{missing_views.join(", ")}" unless missing_views.empty?
 
 manifest = {
   "generated_by" => "contract/bin/extract_manifest.rb",
-  "generated_from" => "Phoenix views + controllers; enum values and routes from contract/openapi.json",
+  "generated_from" => "Phoenix views and controllers; routes, and enum values that could not be " \
+                      "resolved from source, come from contract/openapi.json",
   "caveats" => [
     "openapi.json describes responses only. Every write has requestBody: null, so writable " \
     "ATTRIBUTES are not derivable and are not asserted here. Relationship writeability IS " \
