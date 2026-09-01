@@ -766,41 +766,86 @@ far easier to build against.
 
 ---
 
-## FU-22 — Eight endpoints 500 on an unprefixed `customers` query
+## FU-22 — Eleven controllers list customers instead of their own resource
 
-`GET` on eight `/v2` collections answers `500` with
+`GET` on eight `/v2` collections answers `500`. Seven share one message:
 
 ```
 ** (Postgrex.Error) ERROR 42P01 (undefined_table) relation "customers" does not exist
-    query: SELECT c0."id", ... FROM "customers" AS c0 WHERE (c0."merchant_id" = $1)
+    query: SELECT c0."id", c0."blocked_at", c0."email", c0."name", c0."phone_number", …
+           FROM "customers" AS c0 WHERE (c0."merchant_id" = $1)
 ```
 
-`corporate_officials`, `events`, `legal_addresses`, `merchant_integrations`,
-`permissions`, `red_flags`, `webhook_deliveries` and `webhook_subscriptions`.
-`webhook_subscriptions` raises a `KeyError` instead; the other seven share the
-message above verbatim.
+The query is not a join and not a preload. It is a **customers index query**,
+running from `EventsController.index/2`, `RedFlagsController.index/2` and so
+on. Eleven controllers call `Core.Consumer.list_customers_by/2` in their
+`put_data` block, and only one of them should:
 
-The query carries no schema prefix, so Postgres resolves it against `public`.
-Every mode lives in its own schema (`live`, `sandbox`), and `GET /v2/customers`
-itself is fine on both — so this is a related-record query built without
-`prefix:` rather than a missing table. Reproduced with both the sandbox and the
-live secret token.
+```
+events  integrations  merchant_punitive_actions  corporate_officials
+financial_institutions  merchant_integrations  legal_addresses  permissions
+red_flags  processor_details  webhook_deliveries
+```
 
-Observed on 2026-09-01 against a local instance on branch
-`qb-process-on-pd-success`; the same suite ran clean on 2026-08-30. It may be a
-regression on that branch, or a local database that has since been reset out of
-a `public.customers` these queries were quietly relying on. Worth a
-`mix ecto.reset` before reading much into it — but it reproduces on both
-schemas, which a stale database alone would not explain.
+They are unfinished copies of `customers_controller.ex`, which is the twelfth
+caller and the correct one. `customers_controller` passes
+`prefix: current_mode`; ten of the eleven pass no prefix at all, so Postgres
+resolves `customers` against `public`, finds nothing, and raises — which is
+the only reason this surfaces as an error rather than as wrong data.
+
+`webhook_subscriptions` is broken differently, and is the eighth 500:
+
+```
+** (KeyError) key :id not found in:
+    #Ecto.Query<from w0 in Core.Developers.WebhookSubscription, prefix: "public", …>
+    (core) lib/phoenix_jsonapi/resource.ex:49: PhoenixJSONAPI.Resource.new/4
+```
+
+Its index hands the renderer an **unexecuted `Ecto.Query`** instead of a list
+of records, and the query carries `prefix: "public"` besides. This one at
+least queries its own table.
+
+### Why the 403s are the same finding
+
+Four of the eleven — `integrations`, `financial_institutions`,
+`merchant_punitive_actions`, `processor_details` — answer `403` to a
+full-access merchant token rather than `500`, because `PhoenixJSONAPI.Conn.can?`
+denies before `put_data` runs. That closes the open question from 2026-08-30
+about why eight resources 403: for these four it is not permission scope, it
+is an unfinished controller behind an authorisation check that happens to hide
+it.
+
+**`integrations_controller` is the one to look at first.** It is the single
+copy that *does* pass `prefix: current_mode`, so its customers query would
+execute successfully. Any principal that passes `can?(:basic)` on that route
+gets customer rows — id, email, name, phone number, IP — rendered through the
+Integrations view. Not reachable with a merchant secret token, which is
+refused at `can?`; worth confirming no other principal reaches it.
+
+### Not environmental
+
+Reproduced on 2026-09-01 with both the sandbox and the live secret token,
+before and **after** a full database reset, on branch
+`qb-process-on-pd-success`. `GET /v2/customers` is fine on both schemas
+throughout. An earlier run on 2026-08-30 did not show it, so it is most likely
+a regression on that branch.
 
 ### What the client does
 
-Nothing, beyond reporting it. `spec/contract/live_spec.rb` now treats a 5xx as
+Nothing, beyond reporting it. `spec/contract/live_spec.rb` treats a 5xx as
 "not readable", collects the names, and asserts the set is empty in an example
 of its own — so one broken endpoint costs one failure with a list attached
 rather than blinding the five drift checks that follow it.
 
+`Edge::Event` and `Edge::WebhookSubscription` ship regardless. The routes
+exist and the client builds the right requests; what comes back today is a
+server fault, which is exactly what `Edge::ServerError` is for. Webhook
+*signature verification* is entirely local and unaffected.
+
 ### Asked of the API
 
-Add the schema prefix to the `customers` query these endpoints share, and a
-regression test that runs against a non-`public` schema.
+Replace the copy-pasted `list_customers_by/2` call in each of the eleven with
+that controller's own list function, execute the query in
+`webhook_subscriptions#index`, and add the schema prefix throughout. A
+controller test hitting each index against a non-`public` schema would have
+caught every one of these.

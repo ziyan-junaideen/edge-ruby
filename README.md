@@ -62,10 +62,6 @@ Worth knowing before designing against it. Full detail and evidence in
   not capture — its guard only matches a *failed* demand. The processor layer
   implements capture and void, but nothing calls either function and no route
   exposes them. This client will not fake them.
-- **A partial refund closes the payment demand.** Any refund moves the demand
-  to `refunded` regardless of amount, and no second refund is possible against
-  it. Nothing tracks a refunded total. Verified against a running instance; see
-  [`docs/release-blockers.md`](docs/release-blockers.md), FU-16.
 - **The idempotency key on a payment demand does not prevent a double charge.**
   Its own description says it does. Two identical requests sharing one key
   produced two demands and two charges, so `retriable:` is refused there —
@@ -79,6 +75,13 @@ Worth knowing before designing against it. Full detail and evidence in
   says `confirmed: true`, and renders it through the payment demand view.
   Only a demand has been charged. See
   [`docs/payment-demands.md`](docs/payment-demands.md).
+- **A webhook signature proves integrity, not novelty.** Retries and manual
+  redeliveries both verify. Deduplicate on the event id; see
+  [`docs/webhooks.md`](docs/webhooks.md). Only delivery version v3 can be
+  verified at all — v1 and v2 send a constant digest that does not cover the
+  body.
+- **Refunds are all-or-nothing.** Any refund closes its payment demand, and
+  nothing tracks a refunded total.
 - **`GET /v2/financial_institutions` returns the wrong `data.type`.**
 - **Collections are not paginated.** Every record comes back in one response,
   and this is not expected to change soon. See

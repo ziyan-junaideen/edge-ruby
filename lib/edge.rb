@@ -34,6 +34,12 @@ require_relative "edge/resources/customer"
 require_relative "edge/resources/consumer_address"
 require_relative "edge/resources/payment_method"
 require_relative "edge/resources/payment_demand"
+require_relative "edge/resources/refund_demand"
+require_relative "edge/resources/event"
+require_relative "edge/resources/webhook_subscription"
+require_relative "edge/resources/webhook_delivery"
+require_relative "edge/webhook"
+require_relative "edge/webhook/signature"
 
 # An unofficial Ruby client for the Edge Payment Technologies HTTP API.
 #

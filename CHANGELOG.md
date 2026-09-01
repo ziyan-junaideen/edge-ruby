@@ -63,9 +63,51 @@ from 1.0.0; until then the public API may change in any release.
   check is missing rather than treating "not checked" as "checked and fine".
 - `docs/payment-demands.md`, on the two kinds of record this endpoint returns,
   the two ways to charge, and the five operations the API does not have.
+- `Edge::Webhook`, verifying a v3 delivery: HMAC-SHA256 over
+  `"<timestamp>.<raw body>"`, compared with `OpenSSL.secure_compare`, with a
+  freshness window checked in both directions so a fast clock cannot accept a
+  delivery dated far ahead. Cross-checked byte for byte against the server's
+  own `:crypto.mac/4`, including multi-byte UTF-8 in the secret and the body.
+- `Edge::Webhook.test_signature`, so a consumer's suite does not have to
+  reimplement the signing scheme and then drift from it.
+- `Edge::RefundDemand`, `Edge::Event`, `Edge::WebhookSubscription` and
+  `Edge::WebhookDelivery`.
+- `Edge::Event#code`, joining the event code the server stores in two columns.
+  What documentation and dashboards call the event —
+  `transaction.payment_demands.succeeded` — is not in `slug`, which carries
+  only `"succeeded"`; `resource_type` carries the rest. The joined form exists
+  server-side as a local variable used to match subscriptions and is never
+  stored or delivered, so `subscription.subscribed_to?(event.slug)` is false
+  every time.
+- `Edge::WebhookSubscription.archive`, the only status change the API honours.
+- `Edge::RefundDemand#errored?`, distinct from `#failed?`. `errored` is its own
+  terminal state, and a handler that waits for `failed` waits forever.
+- `Edge::SignatureVerificationError`, which never carries the secret or the
+  body.
+- `docs/webhooks.md`, on why a valid signature does not mean a new delivery.
 
 ### Changed
 
+- `Edge::WebhookSubscription.update` refuses `status`, `secret_key`,
+  `archived_at` and the merchant. The controller drops all of them before the
+  changeset runs, so a merchant pausing deliveries got a `200`, a subscription
+  still reporting `active?`, and deliveries still flowing.
+- `Edge::RefundDemand.create` requires the payment demand it refunds and a
+  reason, and refuses attributes the changeset does not cast — `state` above
+  all, which is forced to `pending` before any cast runs. The controller reads
+  the payment demand linkage before validating anything, so omitting it was a
+  500 rather than a validation error.
+- `refund_demands.amount_currency` is refused. It is inherited from the payment
+  demand and set with `put_change`, which does not cast, so the documented
+  `"USD"` is answered with a 500 rather than a validation error (FU-17).
+- A `custom` refund reason without a `reason_note`, and a note over 500
+  characters, are both refused before the request is sent — the server rejects
+  them with an error naming no field.
+- Only v3 webhook signatures are verified. v1 and v2 send a constant
+  `Base64(SHA1(secret_key))` that does not take the body as an input; a
+  `verify_v1` would be a method whose name promises what it cannot do. Passing
+  a legacy header raises an error naming the delivery version rather than
+  reporting a mismatch.
 - `capture_method: "manual"` is refused on payment demands. The API accepts it
   and it reaches the processor as an authorization that **nothing can capture
   or void** — it sits against the cardholder's account until the processor

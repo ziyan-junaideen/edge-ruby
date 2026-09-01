@@ -19,7 +19,11 @@ the second on `qb-process-on-pd-success`.
 ## Eight of thirty resources answer 403 to a full-access token
 
 Reproduced with **both** the sandbox and live secret tokens, which are
-full-access — so this is not permission scope. Every `/v1` metering resource is
+full-access — so this is not permission scope. **Partly answered by FU-22**:
+four of the eight (`integrations`, `financial_institutions`,
+`merchant_punitive_actions`, `processor_details`) are unfinished controllers
+that would query the customers table if the authorisation check let them
+through. Every `/v1` metering resource is
 among them, which also answers FU-7 ("is `/v1` metering merchant-facing?"): not
 reachable by a merchant token at all.
 
@@ -41,19 +45,30 @@ up as a failing example.
 
 ## Most urgent
 
-**FU-22 — eight endpoints answer 500.** `corporate_officials`, `events`,
-`legal_addresses`, `merchant_integrations`, `permissions`, `red_flags`,
-`webhook_deliveries` and `webhook_subscriptions` all fail with
-`relation "customers" does not exist`: a related-record query built without the
-schema prefix, so Postgres resolves it against `public` while every mode lives
-in its own schema. Reproduced on **both** the sandbox and the live token, while
-`GET /v2/customers` is fine on both.
+**FU-22 — eleven controllers list customers instead of their own resource.**
+`events`, `integrations`, `merchant_punitive_actions`, `corporate_officials`,
+`financial_institutions`, `merchant_integrations`, `legal_addresses`,
+`permissions`, `red_flags`, `processor_details` and `webhook_deliveries` all
+call `Core.Consumer.list_customers_by/2` in their `index`, copied from
+`customers_controller.ex` and never changed. Ten pass no schema prefix, so the
+query resolves against `public` and raises — which is the only reason this is
+an error rather than wrong data. `webhook_subscriptions` fails differently: its
+index hands the renderer an unexecuted `Ecto.Query`.
 
-New since 2026-08-30, when the same check ran clean. Possibly a regression on
-`qb-process-on-pd-success`, possibly a database that has since been reset out of
-a `public.customers` these queries were relying on — worth a `mix ecto.reset`
-before reading much into it. `webhook_subscriptions` matters most of the eight:
-webhooks are commit 11.
+**`integrations_controller` is the one to look at first** — it is the single
+copy that passes `prefix: current_mode`, so its customers query executes.
+Any principal passing `can?(:basic)` there gets customer rows (email, name,
+phone, IP) rendered through the Integrations view. A merchant secret token is
+refused at `can?`, so it is not reachable that way; worth confirming nothing
+else is.
+
+This also closes the "eight resources answer 403" question below: for four of
+them it was never permission scope, it was an unfinished controller behind an
+authorisation check that hid it.
+
+Survives a full database reset, on both tokens. `webhook_subscriptions` and
+`webhook_deliveries` are both in the list, so this is in the way of anyone
+building on webhooks.
 
 ## Being fixed
 

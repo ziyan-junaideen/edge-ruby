@@ -76,6 +76,7 @@ RSpec/DescribeClass:
   Exclude:
     - "spec/contract/**/*"
     - "spec/edge/packaging_spec.rb"
-    # Describes the set of resource classes together, since what matters is
-    # that they agree with the contract and with each other.
+    # Describe sets of resource classes together, since what matters is that
+    # they agree with the contract and with each other.
     - "spec/edge/resources_spec.rb"
+    - "spec/edge/webhook_resources_spec.rb"

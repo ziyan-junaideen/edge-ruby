@@ -17,6 +17,12 @@ module Edge
     end
   end
 
+  # A webhook delivery whose signature did not verify, or which could not be
+  # checked at all. Never carries the secret or the body — including the
+  # payload's own bytes, which is why a JSON parse failure here reports the
+  # class of problem and not the parser's message.
+  class SignatureVerificationError < Error; end
+
   # Raised when a URL would take an authenticated request off the configured
   # origin. Following such a URL with the bearer token attached would hand the
   # credential to whoever supplied it.
