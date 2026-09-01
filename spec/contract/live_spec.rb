@@ -38,14 +38,43 @@ RSpec.describe "the live API", :live do
   # than a disagreement about the contract.
   def readable
     @readable ||= Edge::Contract.resources.filter_map do |name, spec|
-      next unless spec["operations"].include?("list")
-
-      body = client.get("#{spec["api_version"]}/#{name}").data
-      record = Array(body["data"]).first
-      [name, spec, record] if record
-    rescue Edge::PermissionError, Edge::AuthenticationError
-      nil
+      first_record(name, spec) if spec["operations"].include?("list")
     end
+  end
+
+  def first_record(name, spec)
+    record = Array(client.get("#{spec["api_version"]}/#{name}").data["data"]).first
+    [name, spec, record] if record
+  rescue Edge::PermissionError, Edge::AuthenticationError
+    # A fact about the token, not a disagreement about the contract.
+    nil
+  rescue Edge::ServerError
+    # One endpoint answering 500 must not blind the whole drift check.
+    # Raising here cost five examples their result and named none of the
+    # endpoints that were broken — which is how a contract check stops being
+    # read. Collected and asserted on its own below.
+    broken << name
+    nil
+  end
+
+  # Resources that raised a 5xx while `readable` was building. Not memoized
+  # separately from it: `readable` fills this on its first call, and every
+  # example that touches either goes through it.
+  def broken = @broken ||= []
+
+  it "has no readable resource that answers with a server error" do
+    readable
+
+    # Eight do, as of 2026-09-01, and they share one cause: each builds a
+    # `customers` query with no schema prefix, so Postgres looks in `public`
+    # and answers `relation "customers" does not exist` — on the sandbox and
+    # the live schema alike, while `/v2/customers` itself is fine on both.
+    #
+    # Asserted as zero rather than pinned to that list on purpose. Pinning it
+    # would turn eight broken endpoints into the expected state, and this
+    # example exists to keep saying they are broken. See FU-22.
+    expect(broken)
+      .to be_empty, "these resources answered 5xx: #{broken.join(", ")}. See FU-22."
   end
 
   it "actually reached a useful number of resources" do

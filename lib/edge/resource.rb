@@ -33,6 +33,7 @@ module Edge
     private_constant :REGISTRY_LOCK
 
     extend Definition
+    extend CustomActions
 
     # The document this resource was parsed out of, when it came from one.
     # Carries the `included` records and the top-level `links` and `meta`.
@@ -117,5 +118,23 @@ module Edge
     # exception reporter that renders local variables.
     def inspect = "#<#{self.class.name} id=#{id.inspect} type=#{type.inspect}>"
     alias to_s inspect
+
+    private
+
+    # The client a custom action runs on. Same rule as `Relationship#fetch`
+    # and for the same reason: **no fall back to `Edge.default_client`**. A
+    # record parsed without a client would otherwise reach for whatever
+    # global default the process holds, which for anything serving more than
+    # one merchant is another merchant's credentials — and this one confirms
+    # a charge with them.
+    def client_for_action!(action)
+      client || raise(
+        ConfigurationError,
+        "#{action} cannot be sent: this record was built without a client. Call " \
+        "#{self.class}.#{action}(id, client:) instead. It is not taken from " \
+        "Edge.default_client, because a record belonging to one merchant must never be " \
+        "acted on with another's credentials."
+      )
+    end
   end
 end

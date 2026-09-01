@@ -43,6 +43,12 @@ module Edge
         "#{collection_path}/#{PARSER.escape(checked_id(id), UNRESERVED)}"
       end
 
+      # `v2/payment_demands/<id>/confirm`. The action name is not escaped
+      # because it is not caller input: it comes from the manifest, and
+      # `custom_action` has already checked it against the routes the API
+      # declares.
+      def action_path(id, action) = "#{member_path(id)}/#{action}"
+
       private
 
       def checked_id(id)

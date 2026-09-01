@@ -74,6 +74,43 @@ SENSITIVE_ALWAYS = %w[authorization api_key secret_key token].freeze
 # See docs/release-blockers.md, FU-20.
 IDEMPOTENT = %w[refund_demands].freeze
 
+# Attributes a view marks `readonly: true` that the API accepts on a write —
+# and, for several of these, *requires*.
+#
+# `readonly: true` on an attribute only annotates the generated OpenAPI
+# document. It is not enforced anywhere: `properties_to_from/2` keeps an
+# incoming attribute if the view declares the name, readonly or not, and
+# `PaymentDemand.create_changeset/3` then casts every field below through
+# `threeds_cast_changeset/2` (`core/transactions/payment.ex:592-604`).
+#
+# Verified against a running instance rather than inferred. A create carrying
+# all seven returned all seven unchanged, and a create omitting
+# `payer_timezone` was rejected with `payer_timezone can't be blank` — so
+# recording them as unwritable does not merely under-describe the API, it
+# makes `PaymentDemand.create` impossible to call.
+#
+# The three AVS fields in the same views really are server-set — the intent
+# path does not cast them, and they come back as `unverified`/`unprocessed` —
+# so `readonly: true` is right there and they are deliberately absent below.
+# The flag is a starting point per resource, not a fact. See FU-21.
+WRITABLE_DESPITE_READONLY = {
+  "payment_demands" => %w[
+    threeds_version threeds_cryptogram threeds_status eci
+    directory_transaction_eid acs_transaction_eid payer_timezone
+  ].freeze,
+  # The same `threeds_view_fields/1` block, so the same correction. Not yet
+  # exercised against sandbox — payment_subscriptions ships in commit 14, and
+  # this must be re-verified there rather than assumed from the shared source.
+  "payment_subscriptions" => %w[
+    threeds_version threeds_cryptogram threeds_status eci
+    directory_transaction_eid acs_transaction_eid payer_timezone
+  ].freeze
+}.freeze
+
+def writable_despite_readonly?(resource, name)
+  WRITABLE_DESPITE_READONLY.fetch(resource, []).include?(name)
+end
+
 # ---------------------------------------------------------------------------
 # Elixir source parsing
 # ---------------------------------------------------------------------------
@@ -131,7 +168,7 @@ def split_entries(body)
   entries.map(&:strip).reject(&:empty?)
 end
 
-def parse_fields(body)
+def parse_fields(body, resource)
   return {} unless body
 
   split_entries(body).each_with_object({}) do |entry, fields|
@@ -167,9 +204,13 @@ def parse_fields(body)
         field["values"] = inline.scan(/:([a-z_][a-zA-Z0-9_]*)/).flatten
       end
     end
-    # Attributes carry `readonly: true` as well as relationships. This is the
-    # one piece of write-side truth the server source does expose.
-    field["writable"] = false if spec.include?("readonly: true")
+    # Attributes carry `readonly: true` as well as relationships — but for an
+    # attribute it is an OpenAPI documentation flag and nothing more. Nothing
+    # on the write path reads it: the parser filters incoming attributes on
+    # name alone (`phoenix_jsonapi/view.ex:107`, `properties_to_from/2`), and
+    # what survives is whatever the changeset casts. See WRITABLE_DESPITE_READONLY.
+    field["writable"] = false if spec.include?("readonly: true") &&
+                                 !writable_despite_readonly?(resource, name)
     field["parse_failed"] = true unless type
     fields[name] = field
   end
@@ -286,7 +327,7 @@ end
 
 # `fields()` bodies are often a literal map piped through `*_view_fields/1`
 # helpers that Map.merge further attributes in. Follow those pipes.
-def resolve_field_helpers(source, warnings, filename)
+def resolve_field_helpers(source, warnings, filename, resource)
   # Stop at the next top-level definition, or at end of module when fields/0 is
   # the last one. `defp` must terminate too: scanning past it into a private
   # helper would merge unrelated `|> Mod.fun()` pipes as if they were fields.
@@ -310,7 +351,7 @@ def resolve_field_helpers(source, warnings, filename)
       next
     end
 
-    merged.merge!(parse_fields(map_body_after(helper, "Map.merge")))
+    merged.merge!(parse_fields(map_body_after(helper, "Map.merge"), resource))
   end
 end
 
@@ -435,7 +476,8 @@ Dir.children(VIEWS).sort.each do |filename|
   end
 
   fields_body = map_body(source, "fields")
-  fields = parse_fields(fields_body).merge(resolve_field_helpers(source, warnings, filename))
+  fields = parse_fields(fields_body, route_name)
+           .merge(resolve_field_helpers(source, warnings, filename, route_name))
   relationships = parse_relationships(map_body(source, "relationships"))
 
   if fields.empty? && !fields_body.to_s.strip.empty?

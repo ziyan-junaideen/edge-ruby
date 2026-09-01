@@ -340,5 +340,133 @@ RSpec.describe Edge::Resource do
       expect(shadowed.reject { |_, names| names.empty? })
         .to eq("processor_details" => ["type"])
     end
+
+    it "gives a reader only to attributes a server actually serves" do
+      # `from: openapi-snapshot-only` means Edge documents the attribute and
+      # the view never emits it. A reader is a promise the value is there;
+      # one returning nil forever is worse than none, because
+      # `amount_refunded_cents == nil` reads as "nothing refunded yet".
+      documented = Edge::Contract.resources.keys.to_h do |name|
+        [name, Class.new(described_class) { contract(name) }.documented_only_attributes]
+      end
+
+      expect(documented.reject { |_, names| names.empty? }).to eq(
+        "beneficial_owners" => %w[icon_url login_url logo_url name primary_colour state],
+        "payment_demands" => ["amount_refunded_cents"]
+      )
+    end
+  end
+
+  describe "documented-only attributes" do
+    let(:klass) { Class.new(described_class) { contract "payment_demands" } }
+
+    it "have no reader and are not counted as served" do
+      expect(klass.new({})).not_to respond_to(:amount_refunded_cents)
+      expect(klass.attribute_names).not_to include("amount_refunded_cents")
+      expect(klass.attribute_names).to include("amount_cents")
+    end
+
+    it "are not routed into shadowed_attributes, whose fallback is different" do
+      # `#[]` finds both, but the two lists mean different things: shadowed is
+      # "the name was taken", documented-only is "no server sends it".
+      expect(klass.shadowed_attributes).to be_empty
+    end
+
+    it "surface as drift the moment a server does send one" do
+      # The reason they stay out of attribute_names. If Edge implements the
+      # field, `unknown_attributes` says so rather than quietly filling a
+      # reader nobody has looked at since.
+      record = klass.new({ "attributes" => { "amount_refunded_cents" => 250 } })
+
+      expect(record[:amount_refunded_cents]).to eq(250)
+      expect(record.unknown_attributes).to eq(["amount_refunded_cents"])
+    end
+
+    it "are inherited, like every other piece of contract metadata" do
+      expect(Class.new(klass).documented_only_attributes).to eq(["amount_refunded_cents"])
+    end
+  end
+
+  describe ".custom_action" do
+    it "refuses an action the manifest does not record for the resource" do
+      # A method for a route the API does not have is a 404 dressed up as a
+      # capability — the failure define_operations exists to prevent.
+      expect do
+        Class.new(described_class) do
+          contract "customers"
+          custom_action :confirm
+        end
+      end.to raise_error(ArgumentError, %r{customers has no custom action at /\{id\}/confirm})
+    end
+
+    it "matches on the whole path, not on the name appearing inside one" do
+      expect do
+        Class.new(described_class) do
+          contract "payment_demands"
+          custom_action :id
+        end
+      end.to raise_error(ArgumentError, /no custom action/)
+    end
+
+    it "refuses to overwrite an instance method the resource already has" do
+      expect do
+        Class.new(described_class) do
+          contract "payment_demands"
+          def confirm = :mine
+          custom_action :confirm
+        end
+      end.to raise_error(ArgumentError, /already a method/)
+    end
+
+    it "refuses to overwrite a generated class method" do
+      # `custom_action` defines a singleton method as well as an instance one.
+      # Checking only the instance side let an action named `update` clobber
+      # the generated operation, leaving `PaymentDemand.update` taking
+      # `(id, client:)` and writing nothing.
+      klass = Class.new(described_class) { contract "payment_demands" }
+      allow(Edge::Contract).to receive(:resource).with("payment_demands").and_return(
+        Edge::Contract.resource("payment_demands")
+          .merge("custom_actions" => [{ "verb" => "PATCH", "path" => "/{id}/update" }])
+      )
+
+      expect { klass.custom_action(:update) }.to raise_error(ArgumentError, /already a method/)
+      expect(klass.method(:update).owner).to be(Edge::Operations::Update)
+    end
+
+    it "insists on a contract first, since that is what says the route exists" do
+      expect do
+        Class.new(described_class) { custom_action :confirm }
+      end.to raise_error(ArgumentError, /must declare `contract` before/)
+    end
+
+    it "refuses a verb the client cannot send" do
+      # A manifest naming DELETE would otherwise be a NoMethodError inside the
+      # first call rather than at the declaration.
+      klass = Class.new(described_class) { contract "payment_demands" }
+      allow(Edge::Contract).to receive(:resource).with("payment_demands").and_return(
+        Edge::Contract.resource("payment_demands")
+          .merge("custom_actions" => [{ "verb" => "DELETE", "path" => "/{id}/confirm" }])
+      )
+
+      expect { klass.custom_action(:confirm) }
+        .to raise_error(ArgumentError, /which this client cannot send/)
+    end
+
+    it "reads the verb from the manifest rather than assuming one" do
+      client = Edge::Client.new(api_key: "ept_sandbox_sQsnYGFoLvE2Qt7tmsvuDESB")
+      stub_request(:patch, "https://api.tryedge.io/v2/payment_subscriptions/ps_1/confirm")
+        .to_return(status: 200, body: '{"data":{"type":"payment_subscriptions","id":"ps_1"}}')
+
+      klass = Class.new(described_class) do
+        contract "payment_subscriptions"
+        custom_action :confirm
+      end
+      klass.confirm("ps_1", client: client)
+
+      expect(a_request(:patch, "https://api.tryedge.io/v2/payment_subscriptions/ps_1/confirm"))
+        .to have_been_made
+    ensure
+      described_class.registry.delete("payment_subscriptions")
+    end
   end
 end

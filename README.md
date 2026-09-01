@@ -66,9 +66,23 @@ Worth knowing before designing against it. Full detail and evidence in
   to `refunded` regardless of amount, and no second refund is possible against
   it. Nothing tracks a refunded total. Verified against a running instance; see
   [`docs/release-blockers.md`](docs/release-blockers.md), FU-16.
+- **The idempotency key on a payment demand does not prevent a double charge.**
+  Its own description says it does. Two identical requests sharing one key
+  produced two demands and two charges, so `retriable:` is refused there —
+  send a key anyway, but do not retry a create. A fix is written and unmerged;
+  see [`docs/release-blockers.md`](docs/release-blockers.md), FU-20.
+- **Creating a payment demand usually needs the browser.** With 3D Secure on —
+  the default — six required attributes are results of a handshake the browser
+  performs, so a background job cannot build one from order data alone. Whether
+  it is on is a per-processor, per-card-kind setting the API does not report.
+- **`POST /v2/payment_demands` creates a payment *intent*** unless the request
+  says `confirmed: true`, and renders it through the payment demand view.
+  Only a demand has been charged. See
+  [`docs/payment-demands.md`](docs/payment-demands.md).
 - **`GET /v2/financial_institutions` returns the wrong `data.type`.**
-- **Collections are not paginated.** Every record comes back in one response.
-  See [`docs/pagination.md`](docs/pagination.md).
+- **Collections are not paginated.** Every record comes back in one response,
+  and this is not expected to change soon. See
+  [`docs/pagination.md`](docs/pagination.md).
 - **Running against a local instance.** The dev API uses an mkcert
   certificate that Ruby does not trust by default. See
   [`docs/local-development.md`](docs/local-development.md).

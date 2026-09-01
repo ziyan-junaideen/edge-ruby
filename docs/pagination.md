@@ -31,6 +31,12 @@ Consequences a caller has to know about:
 Branch `edg-1498-implement-pagination-in-to-the-jsonapi-interface`, in
 `ept/lib/phoenix_jsonapi/pagination.ex`. Not merged, not deployed.
 
+**No longer treated as imminent (2026-09-01).** Edge has said this will take
+longer than expected, and there is no date. Everything below is recorded so the
+client is not surprised when it does land — it is not a thing to wait for. The
+"collections are not paginated" warning in the README and in each resource's
+documentation is a standing statement about the API, not a temporary note.
+
 | Parameter | Behaviour |
 | --- | --- |
 | `page[limit]` | Default 50, maximum 100. Outside 1..100 is a 400 |

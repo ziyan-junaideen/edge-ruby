@@ -106,6 +106,45 @@ RSpec.describe "contract/manifest.yml" do
     end
   end
 
+  describe "attribute provenance" do
+    # `Resource` decides whether to generate a reader by asking whether `from`
+    # is "view", so a third value appearing here silently changes which
+    # attributes are readable. Pinning the vocabulary turns that into a test
+    # failure at the moment the extractor grows a new one.
+    it "uses only the two provenances the reader generation knows about" do
+      provenances = resources.values.flat_map { |spec| (spec["attributes"] || {}).values }
+                             .map { |attribute| attribute["from"] }
+
+      expect(provenances.uniq).to contain_exactly("view", "openapi-snapshot-only")
+    end
+
+    it "records a provenance for every attribute" do
+      # An attribute with no `from` at all would be treated as documented-only
+      # and lose its reader.
+      unprovenanced = resources.flat_map do |name, spec|
+        (spec["attributes"] || {}).filter_map do |field, attribute|
+          "#{name}.#{field}" unless attribute.key?("from")
+        end
+      end
+
+      expect(unprovenanced).to be_empty
+    end
+
+    it "marks writable exactly the attributes the write path really refuses" do
+      # `readonly: true` in a view is an OpenAPI annotation that nothing on the
+      # write path reads, so writability cannot be derived from it alone. On
+      # payment_demands the flag is right about four attributes and wrong about
+      # seven — the seven 3DS fields are cast on create, and payer_timezone is
+      # required. See docs/release-blockers.md, FU-21.
+      readonly = resources.dig("payment_demands", "attributes")
+                          .select { |_, a| a["writable"] == false }.keys
+
+      expect(readonly).to contain_exactly(
+        "fee_cents", "cvc2_check", "address_line1_verification", "postal_code_verification"
+      )
+    end
+  end
+
   describe "recorded server bugs" do
     # These assertions fail when Edge fixes the bug, which is the point: the
     # client's workaround becomes removable and docs/release-blockers.md stale.

@@ -682,3 +682,125 @@ Either is safe. What is not safe is documenting a key that prevents double
 charging, accepting it, discarding it, and charging twice. Until then no client
 can offer automatic retries on payment creation, and any integrator writing
 their own retry loop against this documentation will double-charge customers.
+
+### Status: being fixed, not yet merged (2026-09-01)
+
+Replay is implemented and works. `create_or_replay_payment_demand/2` takes a
+per-merchant advisory lock, looks the key up across both `payment_demands` and
+`payment_intents`, and returns `{:ok, record, :replayed}` for a matching
+request or an idempotency-conflict changeset for a changed one; a migration
+replaces the unscoped unique index with `(merchant_id, idempotency_key)` on
+both schemas. Verified against the instance running it: one key, two POSTs,
+**one record**, and the key echoed back in the response.
+
+It is **uncommitted work in a feature branch's working tree**, not merged and
+not deployed, and Edge has said the change will take longer than expected. So
+the manifest is unchanged: a client cannot depend on behaviour no shipped
+server has. When it merges and deploys, re-run the two-POST check against a
+deployed instance, add `payment_demands` to `IDEMPOTENT` in
+`contract/bin/extract_manifest.rb`, regenerate, and `retriable: true` starts
+working with no other change.
+
+---
+
+## FU-21 — Attributes marked `readonly: true` are writable, and some are required
+
+`readonly: true` on an attribute annotates the generated OpenAPI document and
+nothing else. Nothing on the write path consults it: `properties_to_from/2`
+(`phoenix_jsonapi/view.ex:107`) keeps an incoming attribute if the view
+declares the name, readonly or not, and what survives is whatever the changeset
+casts.
+
+For `payment_demands` the gap is not cosmetic. All seven fields from
+`Core.Transactions.Payment.threeds_view_fields/1` (`payment.ex:785-807`) carry
+`readonly: true`, and `threeds_cast_changeset/2` (`payment.ex:592-604`) casts
+every one of them:
+
+```
+threeds_version  threeds_cryptogram  threeds_status  eci
+directory_transaction_eid  acs_transaction_eid  payer_timezone
+```
+
+Verified against a running instance rather than inferred. A create carrying six
+of them returned all six unchanged — `eci: "05"`, `threeds_status: "Y"`,
+`payer_timezone: "Europe/London"` — and a create omitting `payer_timezone` was
+rejected with `payer_timezone can't be blank`. **A field documented read-only
+is required on create.**
+
+The three AVS fields in the same views really are server-set: the intent create
+path does not cast them, and a probe sending three invalid enum values got no
+error for any of them. `fee_cents` is overwritten by `cast_fee_cents/2`. So the
+flag is right about four attributes and wrong about seven, on the same
+resource.
+
+### What the client does
+
+`contract/bin/extract_manifest.rb` carries `WRITABLE_DESPITE_READONLY`, listing
+the seven per resource with the evidence beside them, and stops deriving
+`writable: false` from the flag for those. Without it `PaymentDemand.create`
+could not be called at all — the client would refuse the very attributes the
+API demands.
+
+`payment_subscriptions` shares `threeds_view_fields/1` and gets the same
+correction, marked as unverified until commit 14 exercises it.
+
+None of this is expressible in `contract/manifest.yml`, whose `writable` flag
+has no per-operation dimension. `PATCH` casts a different, smaller set —
+`json_api_update_changeset/2` on both the demand (`payment_demand.ex:421-439`)
+and the intent (`payment_intent.ex:155-180`) takes the charge, addendum and
+settings groups and the relationship ids, and no 3DS field, `capture_method` or
+`idempotency_key`. So an attribute can be required on create and silently
+discarded on update, and one flag cannot say both. `Edge::PaymentDemand.update`
+carries that list itself (`UPDATABLE`) and refuses the rest.
+
+### Asked of the API
+
+Either enforce `readonly:` on the write path, or stop requiring fields that
+carry it. As it stands the generated OpenAPI document tells an integrator not
+to send six fields that a create cannot succeed without, and there is no way to
+discover that except by being rejected.
+
+Separately: `PATCH` accepting an attribute it does not cast and answering `200`
+is the same silent-drop failure as FU-2's filters. A rejected write would be
+far easier to build against.
+
+---
+
+## FU-22 — Eight endpoints 500 on an unprefixed `customers` query
+
+`GET` on eight `/v2` collections answers `500` with
+
+```
+** (Postgrex.Error) ERROR 42P01 (undefined_table) relation "customers" does not exist
+    query: SELECT c0."id", ... FROM "customers" AS c0 WHERE (c0."merchant_id" = $1)
+```
+
+`corporate_officials`, `events`, `legal_addresses`, `merchant_integrations`,
+`permissions`, `red_flags`, `webhook_deliveries` and `webhook_subscriptions`.
+`webhook_subscriptions` raises a `KeyError` instead; the other seven share the
+message above verbatim.
+
+The query carries no schema prefix, so Postgres resolves it against `public`.
+Every mode lives in its own schema (`live`, `sandbox`), and `GET /v2/customers`
+itself is fine on both — so this is a related-record query built without
+`prefix:` rather than a missing table. Reproduced with both the sandbox and the
+live secret token.
+
+Observed on 2026-09-01 against a local instance on branch
+`qb-process-on-pd-success`; the same suite ran clean on 2026-08-30. It may be a
+regression on that branch, or a local database that has since been reset out of
+a `public.customers` these queries were quietly relying on. Worth a
+`mix ecto.reset` before reading much into it — but it reproduces on both
+schemas, which a stale database alone would not explain.
+
+### What the client does
+
+Nothing, beyond reporting it. `spec/contract/live_spec.rb` now treats a 5xx as
+"not readable", collects the names, and asserts the set is empty in an example
+of its own — so one broken endpoint costs one failure with a list attached
+rather than blinding the five drift checks that follow it.
+
+### Asked of the API
+
+Add the schema prefix to the `customers` query these endpoints share, and a
+regression test that runs against a non-`public` schema.

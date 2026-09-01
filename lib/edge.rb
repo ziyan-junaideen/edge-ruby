@@ -28,10 +28,12 @@ require_relative "edge/relationship"
 require_relative "edge/list_object"
 require_relative "edge/operations"
 require_relative "edge/resource/definition"
+require_relative "edge/resource/custom_actions"
 require_relative "edge/resource"
 require_relative "edge/resources/customer"
 require_relative "edge/resources/consumer_address"
 require_relative "edge/resources/payment_method"
+require_relative "edge/resources/payment_demand"
 
 # An unofficial Ruby client for the Edge Payment Technologies HTTP API.
 #

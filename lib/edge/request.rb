@@ -20,8 +20,22 @@ module Edge
     # `payment_demands`. Used to look the operation up in the contract, which
     # is keyed by route name rather than by JSON:API type — the two diverge for
     # financial_institutions (see docs/release-blockers.md, RB-3).
+    #
+    # A collection or a member, and nothing deeper. A sub-resource path is a
+    # different operation from the resource it hangs off, and answering with
+    # the parent's name would hand it the parent's contract:
+    # `PATCH /v2/payment_demands/<id>/confirm` would inherit
+    # `payment_demands`' `idempotent_writes` and could be marked retriable,
+    # when confirm is a *retry of a failed charge*
+    # (`payment_demands_controller.ex`, `new_retry_confirm_payment_demand/1`)
+    # and replaying it charges again. `nil` denies the lookup, and
+    # Transport's `reject_unsafe_replay!` then refuses `retriable: true` —
+    # which is the right answer for every sub-resource this API has.
+    # Inline rather than a named constant: a constant assigned inside a
+    # `Struct.new` block resolves against the block's lexical scope, so it
+    # would land on `Edge` rather than on Request.
     def resource_name
-      URI.parse(url.to_s).path.to_s[%r{\A/v\d+/([a-z_]+)}, 1]
+      URI.parse(url.to_s).path.to_s[%r{\A/v\d+/([a-z_]+)(?:/[^/]+)?\z}, 1]
     rescue URI::Error
       nil
     end

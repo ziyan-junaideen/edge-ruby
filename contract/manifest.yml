@@ -28,6 +28,8 @@ warnings:
 - 'meter_ticks.ex: declares idempotency_key but documents no replay contract; writes
   stay non-retryable'
 - 'payment_demands.ex: amount_refunded_cents is in the snapshot but not in the view'
+- 'payment_demands.ex: declares idempotency_key but documents no replay contract;
+  writes stay non-retryable'
 - 'payment_methods.ex: enum kind resolved from the snapshot only'
 - 'payment_subscriptions.ex: billing_period accessor Core.Transactions.PaymentSubscription.billing_periods()
   is defined in lib/core/purchases/link.ex and lib/core/transactions/payment.ex; not
@@ -931,31 +933,24 @@ resources:
         from: view
       threeds_version:
         type: string
-        writable: false
         from: view
       threeds_cryptogram:
         type: string
-        writable: false
         from: view
       threeds_status:
         type: string
-        writable: false
         from: view
       eci:
         type: string
-        writable: false
         from: view
       directory_transaction_eid:
         type: string
-        writable: false
         from: view
       acs_transaction_eid:
         type: string
-        writable: false
         from: view
       payer_timezone:
         type: string
-        writable: false
         from: view
       idempotency_key:
         type: string
@@ -1209,31 +1204,24 @@ resources:
         from: view
       threeds_version:
         type: string
-        writable: false
         from: view
       threeds_cryptogram:
         type: string
-        writable: false
         from: view
       threeds_status:
         type: string
-        writable: false
         from: view
       eci:
         type: string
-        writable: false
         from: view
       directory_transaction_eid:
         type: string
-        writable: false
         from: view
       acs_transaction_eid:
         type: string
-        writable: false
         from: view
       payer_timezone:
         type: string
-        writable: false
         from: view
       idempotency_key:
         type: string

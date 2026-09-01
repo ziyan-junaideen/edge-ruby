@@ -23,8 +23,26 @@ module Edge
 
       def json_api_type = contract_spec&.fetch("json_api_type", nil) || contract_name
 
-      # Attribute names the contract knows about, in manifest order.
+      # Attribute names this endpoint serves, in manifest order — one reader
+      # each. Excludes `documented_only_attributes`, which it does not serve.
       def attribute_names = inherited_list(:attribute_names)
+
+      # Attributes the manifest carries from the OpenAPI snapshot alone
+      # (`from: openapi-snapshot-only`): Edge documents them, and no running
+      # instance has ever sent one.
+      #
+      # They get no reader. A reader is a promise that the value is there to
+      # be read, and `demand.amount_refunded_cents` returning nil forever is
+      # the worst shape that promise can take — it looks like "nothing
+      # refunded yet" and it is really "this field does not exist". The
+      # provenance is in the manifest precisely so this can be honoured; not
+      # honouring it was how the field nearly shipped (RB-2).
+      #
+      # Still reachable through `#[]`, and deliberately outside
+      # `attribute_names`, so that the day a server does send one it surfaces
+      # in `#unknown_attributes` as drift rather than silently filling a
+      # reader nobody has looked at since.
+      def documented_only_attributes = inherited_list(:documented_only_attributes)
 
       # Relationship names the contract knows about, in manifest order.
       def relationship_names = inherited_list(:relationship_names)
@@ -183,13 +201,20 @@ module Edge
       end
 
       def define_attribute_readers(attributes)
-        attributes.each_key do |name|
+        attributes.each do |name, spec|
+          next documented_only_attributes << name if documented_only?(spec)
+
           attribute_names << name
           next shadowed_attributes << name if reader_taken?(name)
 
           define_method(name) { self[name] }
         end
       end
+
+      # `from` records where the extractor learned about the attribute:
+      # `view` means it read the serializer that emits it, and anything else
+      # means it did not.
+      def documented_only?(spec) = spec.is_a?(Hash) && spec["from"] != "view"
 
       # `respond_to?` is not enough: it misses private methods, and defining
       # `send` or `freeze` over one would break the object in ways that surface

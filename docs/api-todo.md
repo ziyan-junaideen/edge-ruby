@@ -4,9 +4,10 @@ Raised by `edge-ruby` while building against a local instance. Nothing here is
 a client bug; each is something the client currently works around, refuses, or
 cannot offer. Full write-ups are in [`release-blockers.md`](release-blockers.md).
 
-Status is from the spike on 2026-08-30, against
-`api.tryedge.test:4001` on branch `edg-1498-implement-pagination-in-to-the-jsonapi-interface`,
-with full-access sandbox and live tokens.
+Status is from the spike on 2026-08-30 and a second pass on 2026-09-01,
+against `api.tryedge.test:4001` with full-access sandbox and live tokens. The
+first ran on branch `edg-1498-implement-pagination-in-to-the-jsonapi-interface`,
+the second on `qb-process-on-pd-success`.
 
 ## Acknowledged, parked
 
@@ -40,15 +41,45 @@ up as a failing example.
 
 ## Most urgent
 
-**FU-20 — `payment_demands.idempotency_key` does not prevent double charging.**
-The view documents it as "a unique value that prevents double charging". It is
-never cast on create, there is no replay lookup, and no unique constraint
-fires. Two identical POSTs sharing one key produced two payment demands, both
-201. Refunds are unaffected and work correctly.
+**FU-22 — eight endpoints answer 500.** `corporate_officials`, `events`,
+`legal_addresses`, `merchant_integrations`, `permissions`, `red_flags`,
+`webhook_deliveries` and `webhook_subscriptions` all fail with
+`relation "customers" does not exist`: a related-record query built without the
+schema prefix, so Postgres resolves it against `public` while every mode lives
+in its own schema. Reproduced on **both** the sandbox and the live token, while
+`GET /v2/customers` is fine on both.
 
-An integrator who reads the field description and writes a retry loop against
-it will charge customers twice. This is worth fixing ahead of everything else
-on this page.
+New since 2026-08-30, when the same check ran clean. Possibly a regression on
+`qb-process-on-pd-success`, possibly a database that has since been reset out of
+a `public.customers` these queries were relying on — worth a `mix ecto.reset`
+before reading much into it. `webhook_subscriptions` matters most of the eight:
+webhooks are commit 11.
+
+## Being fixed
+
+**FU-20 — `payment_demands.idempotency_key` does not prevent double charging.**
+On every shipped server the key is never cast on create, there is no replay
+lookup, and no unique constraint fires; two identical POSTs sharing one key
+produced two payment demands, both 201.
+
+**The fix in the working tree works.** `create_or_replay_payment_demand/2` with
+a per-merchant advisory lock, a lookup across demands and intents, and a
+`(merchant_id, idempotency_key)` unique index — verified 2026-09-01 against the
+instance running it: one key, two POSTs, **one record**, key echoed back. It is
+uncommitted and undeployed, so `contract/manifest.yml` still records
+`idempotent_writes: false`. When it ships, one line in
+`contract/bin/extract_manifest.rb` turns client-side retries on.
+
+Until then any integrator who reads the field description and writes a retry
+loop against it will charge customers twice.
+
+**FU-21 — attributes marked `readonly: true` are writable, and some are
+required.** The flag only annotates the generated OpenAPI document; nothing on
+the write path reads it. All seven `threeds_view_fields/1` attributes on
+`payment_demands` are cast on create, and `payer_timezone` is *required* —
+a field documented read-only that a create cannot succeed without. The client
+had to stop deriving `writable: false` from the flag for those seven, or
+`PaymentDemand.create` could not be called at all.
 
 ## Correctness
 
@@ -71,22 +102,26 @@ on this page.
 
 Not for the API team — recorded here so it is not lost.
 
-- `Edge::Request#resource_name` matches only the first path segment
-  (`lib/edge/request.rb:24`), so `POST /v2/payment_demands/:id/confirm` would
-  resolve to `payment_demands` and inherit its `idempotent_writes: true`.
-  Harmless today because no sub-resource action is implemented; **must be
-  fixed before `confirm` ships in commit 10**, because `confirm` is a retry of
-  a failed demand and not a replay.
-- `contract/manifest.yml` now records `idempotent_writes: false` for
-  `payment_demands` (FU-20), and the extractor no longer lists it, so
-  regenerating cannot restore the claim. Revisit only once the API implements
-  replay or rejection.
+- `contract/manifest.yml` records `idempotent_writes: false` for
+  `payment_demands` (FU-20), and the extractor does not list it, so
+  regenerating cannot restore the claim. Revisit only once replay is merged
+  **and deployed** — not when it merges.
 - `Edge::PaymentMethod#last_four` redefines the reader generated from the
   contract, so loading the gem with warnings on prints
   `method redefined; discarding old last_four`. It exists only to carry
   documentation. Pre-existing, harmless, and worth resolving so that warnings
   stay signal.
-- `Edge::Resource` generates a reader for every attribute the manifest records,
-  including those marked `from: openapi-snapshot-only` — documented by Edge but
-  never serialized. Honouring provenance when generating readers is worth doing
-  before those resources ship.
+- `Edge::PaymentDemand` refuses `capture_method: "manual"`, which the API
+  accepts. It is the one place this client declines something the server
+  allows, and it is because nothing can capture or void the authorization
+  afterwards. Revisit if deferred capture ships.
+
+**Done since 2026-08-30**
+
+- `Edge::Request#resource_name` now stops at a member, so
+  `PATCH /v2/payment_demands/:id/confirm` inherits no resource's
+  `idempotent_writes`.
+- `Edge::Resource` no longer generates a reader for an attribute marked
+  `from: openapi-snapshot-only`. That covered `payment_demands`
+  `amount_refunded_cents`, which would have shipped in commit 10 returning nil
+  forever and reading as "nothing refunded yet".
