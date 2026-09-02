@@ -15,7 +15,7 @@ Gem::Specification.new do |spec|
     certified by Edge Payment Technologies.
   DESCRIPTION
 
-  spec.homepage = "https://github.com/jdeen/edge-ruby"
+  spec.homepage = "https://github.com/ziyan-junaideen/edge-ruby"
   spec.license = "MIT"
 
   # Bounded to the minors the CI matrix actually runs: 3.2, 3.3, 3.4, 4.0.
