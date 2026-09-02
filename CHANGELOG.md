@@ -8,6 +8,12 @@ from 1.0.0; until then the public API may change in any release.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-02
+
+First published release. The API surface is exercised against a sandbox rather
+than inferred from documentation; where the two disagree, this client follows
+what the server actually does and says so in `docs/release-blockers.md`.
+
 ### Added
 
 - Vendored API contract: `contract/manifest.yml` derived from the Edge Phoenix
@@ -158,3 +164,6 @@ from 1.0.0; until then the public API may change in any release.
   charges again.
 - `URI::DEFAULT_PARSER.escape` warned on Ruby 3.4; the parser is now chosen at
   load time, since 3.2 and 3.3 have no `RFC2396_PARSER` to name.
+
+[Unreleased]: https://github.com/ziyan-junaideen/edge-ruby/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/ziyan-junaideen/edge-ruby/releases/tag/v0.1.0

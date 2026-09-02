@@ -7,11 +7,81 @@ for Rails, Sinatra and plain Rack applications.
 > certified by Edge Payment Technologies. It is not the official SDK. Bugs here
 > are bugs here — report them on this repository, not to Edge support.
 
-> **Pre-release.** No published gem yet, and no usable release — this repository
-> currently contains the API contract and its provenance, and no library code.
-> The public API is still being settled and will change without notice until
-> 0.1.0. See [`docs/release-blockers.md`](docs/release-blockers.md) for what is
-> gating the first release.
+> **0.x.** The public API is still being settled and may change in any release
+> until 1.0. What is here is exercised against sandbox rather than assumed —
+> see [`docs/release-blockers.md`](docs/release-blockers.md) for the API-side
+> gaps that constrain what this client is willing to expose.
+
+## Installation
+
+```ruby
+gem "edge-ruby"
+```
+
+Requires Ruby >= 3.2. The only runtime dependency is Faraday 2.
+
+## Quick start
+
+```ruby
+Edge.configure do |config|
+  config.api_key = ENV.fetch("EDGE_SECRET_KEY")
+end
+
+customer = Edge::Customer.create(email: "ada@example.com", name: "Ada Lovelace")
+customer.addresses.fetch          # relationships never fetch implicitly
+```
+
+`Edge.configure` sets one process-wide client. Anything holding several
+merchants' credentials builds clients instead, and passes one per call:
+
+```ruby
+client = Edge::Client.new(api_key: merchant.edge_secret_key)
+Edge::Customer.list(client: client, filter: { email: "ada@example.com" })
+```
+
+Charging a stored payment method, in one step:
+
+```ruby
+demand = Edge::PaymentDemand.create(
+  {
+    amount_cents: 5_00, amount_currency: "USD",
+    purchase_kind: "order", purchase_reference: order.number,
+    payer_timezone: "Europe/London", confirmed: true,
+    idempotency_key: order.edge_idempotency_key
+  }.merge(order.threeds_results),
+  relationships: { payer: customer, payment_method: method_id, billing_address: address }
+)
+
+demand.demand?          # => true — an intent would be false, and has charged nothing
+demand.processor_state  # => "pending"
+```
+
+Without `confirmed: true` that same call creates a payment *intent*, which has
+taken no money. Read [`docs/payment-demands.md`](docs/payment-demands.md) before
+building a checkout on it.
+
+Verifying a webhook, over the raw request body:
+
+```ruby
+event = Edge::Webhook.construct_event(
+  request.body.read,                      # raw, before any parser touches it
+  request.get_header("HTTP_EDGE_SIGNATURE"),
+  ENV.fetch("EDGE_WEBHOOK_SECRET")
+)
+```
+
+Only delivery version v3 can be verified at all; v1 and v2 send a constant
+digest that does not cover the body. See [`docs/webhooks.md`](docs/webhooks.md).
+
+## What is in this release
+
+`Customer`, `ConsumerAddress`, `PaymentMethod`, `PaymentDemand`, `RefundDemand`,
+`Event`, `WebhookSubscription` and `WebhookDelivery`, plus webhook signature
+verification, operation-aware retries, redaction, and typed errors.
+
+Subscriptions, merchant-facing account resources and `/v1` metering are not
+here yet. `client.get` / `client.post` / `client.patch` reach any endpoint in
+the meantime and are a supported escape hatch, not a workaround.
 
 ## Naming
 
@@ -22,13 +92,13 @@ repository name doubles as the package name — the same shape as `stripe-ruby`.
 
 `Edge` is a broad top-level constant and can collide with an application's own
 `Edge` model. That is an accepted tradeoff, recorded here so it is a choice
-rather than a surprise. The gem will ship both `lib/edge.rb` and a
+rather than a surprise. The gem ships both `lib/edge.rb` and a
 `lib/edge-ruby.rb` shim, so `gem "edge-ruby"` works without a `require:` option.
 
 ## Design commitments
 
-These are settled decisions that constrain the implementation. **None of them is
-built yet** — they describe what the client will do, not what it does.
+Settled decisions that constrain the implementation, and that the resources in
+this release are built on.
 
 - **Stripe-shaped objects.** Attributes are methods, relationships are
   accessors, and the untouched JSON:API document is always reachable via `#raw`.
@@ -46,7 +116,7 @@ built yet** — they describe what the client will do, not what it does.
   client states it per operation rather than inferring it.
 - **Reads retry; writes do not.** A write opts into retries only after its
   server-side replay contract has been exercised against sandbox.
-- **Idempotency keys are yours.** The client will not mint ephemeral ones: a key
+- **Idempotency keys are yours.** The client does not mint ephemeral ones: a key
   generated inside a call cannot protect a job retried in another process.
 - **Secrets are redacted by default.** The API returns webhook signing keys,
   merchant tokens and KYC identifiers. None of them appear in `inspect`,
