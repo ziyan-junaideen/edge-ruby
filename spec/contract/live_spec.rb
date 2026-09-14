@@ -1,0 +1,172 @@
+# frozen_string_literal: true
+
+# Checks the manifest against a running Edge instance.
+#
+# Excluded from the default run: it needs a server and a credential, and the
+# rest of the suite is forbidden from touching the network. Enable it with
+#
+#   EDGE_LIVE_URL=https://api.tryedge.test:4001 \
+#   EDGE_LIVE_KEY=ept_sandbox_s... \
+#   EDGE_LIVE_CA=/path/to/rootCA.pem \
+#     bundle exec rspec spec/contract/live_spec.rb --tag live
+#
+# `EDGE_LIVE_CA` is optional; `EDGE_LIVE_INSECURE=1` skips verification, which
+# the client permits only for a .test/.local/loopback host.
+#
+# Read-only on purpose. The write half of the lifecycle is not repeatable —
+# every refund permanently spends part of a succeeded payment demand's balance,
+# and creating a demand that succeeds usually needs a 3DS handshake — so what a
+# spike proved by hand is recorded in the docs rather than pretended to be a
+# test.
+RSpec.describe "the live API", :live do
+  def client
+    @client ||= Edge::Client.new(
+      api_key: ENV.fetch("EDGE_LIVE_KEY"),
+      base_url: ENV.fetch("EDGE_LIVE_URL"),
+      ssl: ssl_options
+    )
+  end
+
+  def ssl_options
+    return { ca_file: ENV["EDGE_LIVE_CA"] } if ENV["EDGE_LIVE_CA"]
+    return { verify: false } if ENV["EDGE_LIVE_INSECURE"]
+
+    nil
+  end
+
+  # Resources this credential may read. A token scoped to one merchant gets a
+  # 403 on the platform-wide ones, and that is a fact about the token rather
+  # than a disagreement about the contract.
+  def readable
+    @readable ||= Edge::Contract.resources.filter_map do |name, spec|
+      first_record(name, spec) if spec["operations"].include?("list")
+    end
+  end
+
+  def first_record(name, spec)
+    record = Array(client.get("#{spec["api_version"]}/#{name}").data["data"]).first
+    [name, spec, record] if record
+  rescue Edge::PermissionError, Edge::AuthenticationError
+    # A fact about the token, not a disagreement about the contract.
+    nil
+  rescue Edge::ServerError
+    # One endpoint answering 500 must not blind the whole drift check.
+    # Raising here cost five examples their result and named none of the
+    # endpoints that were broken — which is how a contract check stops being
+    # read. Collected and asserted on its own below.
+    broken << name
+    nil
+  end
+
+  # Resources that raised a 5xx while `readable` was building. Not memoized
+  # separately from it: `readable` fills this on its first call, and every
+  # example that touches either goes through it.
+  def broken = @broken ||= []
+
+  it "has no readable resource that answers with a server error" do
+    readable
+
+    # Eight do, as of 2026-09-01 — on sandbox and live alike, while
+    # `/v2/customers` itself is fine on both.
+    #
+    # Asserted as zero rather than pinned to that list on purpose. Pinning it
+    # would turn eight broken endpoints into the expected state, and this
+    # example exists to keep saying they are broken.
+    expect(broken)
+      .to be_empty, "these resources answered 5xx: #{broken.join(", ")}."
+  end
+
+  it "actually reached a useful number of resources" do
+    # Three of the examples below asserted that a difference is empty, and an
+    # empty `readable` satisfies all of them without checking anything. A
+    # credential with no permissions, or a server with an empty database,
+    # would otherwise report a clean contract.
+    expect(readable.map(&:first)).to include("customers", "payment_demands", "payment_methods")
+    expect(readable.size).to be >= 8
+  end
+
+  it "answers with the JSON:API version the client is written against" do
+    body = client.get("v2/customers").data
+
+    expect(body.dig("jsonapi", "version")).to eq("1.1")
+  end
+
+  it "serializes the type each resource records, for every readable resource" do
+    mismatched = readable.filter_map do |name, spec, record|
+      [name, spec["json_api_type"], record["type"]] if record["type"] != spec["json_api_type"]
+    end
+
+    expect(mismatched).to be_empty
+  end
+
+  it "sends no attribute the manifest has not recorded" do
+    # The direction that matters for a client: an attribute the server sends
+    # and the manifest lacks is a reader the caller cannot reach, and a sign
+    # the manifest needs updating.
+    undeclared = readable.filter_map do |name, spec, record|
+      extra = record["attributes"].keys - (spec["attributes"] || {}).keys
+      [name, extra] if extra.any?
+    end
+
+    expect(undeclared).to be_empty
+  end
+
+  it "sends no relationship the manifest has not recorded" do
+    undeclared = readable.filter_map do |name, spec, record|
+      extra = (record["relationships"] || {}).keys - (spec["relationships"] || {}).keys
+      [name, extra] if extra.any?
+    end
+
+    expect(undeclared).to be_empty
+  end
+
+  # The other direction, which is a documentation problem rather than a client
+  # one. Pinned as an exact set so that a field starting or stopping being
+  # serialized shows up here instead of going unnoticed.
+  it "still omits exactly the attributes known to be declared and never sent" do
+    known_absent = {
+      "beneficial_owners" => %w[icon_url login_url logo_url name primary_colour state],
+      "merchant_tokens" => %w[expiry],
+      "merchants" => %w[business_privacy_policy_url],
+      "payment_demands" => %w[amount_refunded_cents confirmed],
+      "payment_methods" => %w[expiry_month expiry_year],
+      "payment_subscriptions" => %w[confirmed]
+    }
+
+    # Keyed on what was actually read, not on what is currently missing. Doing
+    # the latter drops a resource from both sides the moment every one of its
+    # fields starts being sent, so the complete fix — the outcome this example
+    # exists to notice — would have passed silently.
+    absent = readable.to_h do |name, spec, record|
+      [name, ((spec["attributes"] || {}).keys - record["attributes"].keys).sort]
+    end
+    expected = readable.to_h { |name, _, _| [name, (known_absent[name] || []).sort] }
+
+    expect(absent).to eq(expected)
+  end
+
+  it "reports pagination in a shape the client can read, or not at all" do
+    # Production does not paginate; a future server may add `meta.pagination`
+    # (docs/pagination.md). Both are legitimate answers depending on which the
+    # instance runs, so this pins the shape rather than the presence — asserting
+    # `limit` exists would fail against production, and asserting it does not
+    # would fail against a paginating server.
+    meta = client.get("v2/customers").data.dig("meta", "pagination")
+
+    expect(meta).to be_nil.or include("limit")
+    expect(meta["limit"]).to be_a(Integer) if meta
+  end
+
+  describe "a to-many relationship" do
+    it "carries a link and no linkage, whatever include: asked for" do
+      # Edge::Relationship reports these as unloaded, and this is the
+      # check that the reason it does so still holds.
+      customer = client.get("v2/customers", params: { "include" => "addresses" })
+                       .data["data"].first
+      addresses = customer["relationships"]["addresses"]
+
+      expect(addresses).to have_key("links")
+      expect(addresses).not_to have_key("data")
+    end
+  end
+end

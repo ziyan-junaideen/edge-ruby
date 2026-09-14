@@ -1,0 +1,14 @@
+/.bundle/
+/Gemfile.lock
+/coverage/
+/doc/
+/pkg/
+/spec/reports/
+/tmp/
+*.gem
+.DS_Store
+.rspec_status
+.yardoc
+
+# Local planning and review notes, not part of the published gem.
+/.jdeen/

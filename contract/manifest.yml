@@ -1,0 +1,1647 @@
+---
+caveats:
+- 'Attributes and relationships describe what the server actually serializes. Where
+  Edge documents a field the server does not serve, it is kept with `from: openapi-snapshot-only`.'
+- Writable ATTRIBUTES are stated per operation in the resource classes, not here.
+  Relationship writeability is recorded here.
+- Enum values are a lower bound that can lag the server. The client must accept unknown
+  values.
+- sensitive_fields is hand-maintained and errs wide. It is a redaction obligation,
+  not a claim about how secret a field is.
+- idempotent_writes marks resources whose replay contract has been verified against
+  sandbox. It does NOT authorise automatic retries on its own; the caller still opts
+  in per request.
+always_redact:
+- authorization
+- api_key
+- secret_key
+- token
+resources:
+  account_alerts:
+    json_api_type: account_alerts
+    api_version: v2
+    operations:
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      acknowledged_at:
+        type: timestamp
+        from: view
+      status:
+        type: enum
+        from: view
+        values:
+        - pending
+        - acknowledged
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+      red_flag:
+        view: RedFlags
+        cardinality: one
+        writable: true
+  accounts:
+    json_api_type: accounts
+    api_version: v2
+    operations:
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields:
+    - email
+    - name
+    attributes:
+      account_status:
+        type: enum
+        from: view
+        values:
+        - incomplete
+        - active
+        - quarantined
+        - banned
+        - pending
+        - archived
+      email:
+        type: string
+        from: view
+      name:
+        type: string
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      memberships:
+        view: Memberships
+        cardinality: many
+        writable: true
+      personal_identification:
+        view: PersonalIdentifications
+        cardinality: one
+        writable: true
+  beneficial_owners:
+    json_api_type: beneficial_owners
+    api_version: v2
+    operations:
+    - create
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      ownership_percentage:
+        type: integer
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+      icon_url:
+        type: unknown
+        from: openapi-snapshot-only
+      login_url:
+        type: unknown
+        from: openapi-snapshot-only
+      logo_url:
+        type: unknown
+        from: openapi-snapshot-only
+      name:
+        type: unknown
+        from: openapi-snapshot-only
+      primary_colour:
+        type: unknown
+        from: openapi-snapshot-only
+      state:
+        type: unknown
+        from: openapi-snapshot-only
+    relationships:
+      personal_identification:
+        view: PersonalIdentifications
+        cardinality: one
+        writable: true
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+  consumer_addresses:
+    json_api_type: consumer_addresses
+    api_version: v2
+    operations:
+    - create
+    - list
+    - retrieve
+    - update
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields:
+    - line_1
+    - line_2
+    - city
+    - state
+    - zip
+    attributes:
+      line_1:
+        type: string
+        from: view
+      line_2:
+        type: string
+        from: view
+      city:
+        type: string
+        from: view
+      state:
+        type: string
+        from: view
+      zip:
+        type: string
+        from: view
+      country:
+        type: string
+        from: view
+      discarded_at:
+        type: timestamp
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+      customer:
+        view: Customers
+        cardinality: one
+        writable: true
+  corporate_officials:
+    json_api_type: corporate_officials
+    api_version: v2
+    operations:
+    - create
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      role:
+        type: string
+        from: view
+      daily_contact:
+        type: boolean
+        from: view
+      payments_decision_maker:
+        type: boolean
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      personal_identification:
+        view: PersonalIdentifications
+        cardinality: one
+        writable: true
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+  customers:
+    json_api_type: customers
+    api_version: v2
+    operations:
+    - create
+    - list
+    - retrieve
+    - update
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields:
+    - email
+    - name
+    - phone_number
+    attributes:
+      name:
+        type: string
+        from: view
+      phone_number:
+        type: phone
+        from: view
+      email:
+        type: email
+        from: view
+      description:
+        type: string
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      blocked_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+      addresses:
+        view: ConsumerAddresses
+        cardinality: many
+        writable: true
+      payment_demands:
+        view: PaymentDemands
+        cardinality: many
+        writable: true
+  events:
+    json_api_type: events
+    api_version: v2
+    operations:
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      data:
+        type: map
+        from: view
+      mode:
+        type: enum
+        from: view
+        values:
+        - live
+        - sandbox
+      resource_id:
+        type: string
+        from: view
+      resource_type:
+        type: string
+        from: view
+      slug:
+        type: string
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+    relationships:
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+  financial_institutions:
+    json_api_type: beneficial_owners
+    api_version: v2
+    operations:
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      icon_url:
+        type: string
+        from: view
+      login_url:
+        type: string
+        from: view
+      logo_url:
+        type: string
+        from: view
+      name:
+        type: string
+        from: view
+      primary_colour:
+        type: string
+        from: view
+      state:
+        type: string
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      personal_identification:
+        view: PersonalIdentifications
+        cardinality: one
+        writable: true
+  integrations:
+    json_api_type: integrations
+    api_version: v2
+    operations:
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      name:
+        type: string
+        from: view
+      url:
+        type: string
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      merchant_integrations:
+        view: MerchantIntegrations
+        cardinality: many
+        writable: true
+  legal_addresses:
+    json_api_type: legal_addresses
+    api_version: v2
+    operations:
+    - create
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields:
+    - line_1
+    - line_2
+    - city
+    - state
+    - zip
+    attributes:
+      line_1:
+        type: string
+        from: view
+      line_2:
+        type: string
+        from: view
+      city:
+        type: string
+        from: view
+      state:
+        type: string
+        from: view
+      zip:
+        type: string
+        from: view
+      country:
+        type: string
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships: {}
+  memberships:
+    json_api_type: memberships
+    api_version: v2
+    operations:
+    - create
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      opener:
+        type: boolean
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      account:
+        view: Accounts
+        cardinality: one
+        writable: true
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+      permissions:
+        view: Permissions
+        cardinality: many
+        writable: true
+  merchant_integrations:
+    json_api_type: merchant_integrations
+    api_version: v2
+    operations:
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      admin_url:
+        type: string
+        from: view
+      name:
+        type: string
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+      integration:
+        view: Integrations
+        cardinality: one
+        writable: true
+      merchant_token:
+        view: MerchantTokens
+        cardinality: one
+        writable: true
+  merchant_punitive_actions:
+    json_api_type: merchant_punitive_actions
+    api_version: v2
+    operations:
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      action:
+        type: enum
+        from: view
+        values:
+        - quarantine
+        - ban
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+      red_flag:
+        view: RedFlags
+        cardinality: one
+        writable: true
+  merchant_tokens:
+    json_api_type: merchant_tokens
+    api_version: v2
+    operations:
+    - create
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields:
+    - token
+    attributes:
+      name:
+        type: string
+        from: view
+      context:
+        type: enum
+        from: view
+        values:
+        - browser
+        - secret
+      schema:
+        type: enum
+        from: view
+        values:
+        - live
+        - sandbox
+      token:
+        type: string
+        from: view
+      expiry:
+        type: timestamp
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+      permissions:
+        view: Permissions
+        cardinality: many
+        writable: true
+      processor_detail:
+        view: ProcessorDetails
+        cardinality: one
+        writable: true
+  merchants:
+    json_api_type: merchants
+    api_version: v2
+    operations:
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      business_name:
+        type: string
+        from: view
+      business_description:
+        type: string
+        from: view
+      phone_number:
+        type: string
+        from: view
+      business_email:
+        type: string
+        from: view
+      prior_bankruptcies:
+        type: string
+        from: view
+      category_code:
+        type: string
+        from: view
+      business_privacy_policy_url:
+        type: string
+        from: view
+      business_support_email:
+        type: string
+        from: view
+      business_support_url:
+        type: string
+        from: view
+      business_terms_url:
+        type: string
+        from: view
+      business_timezone:
+        type: string
+        from: view
+      business_website:
+        type: string
+        from: view
+      business_zip_code:
+        type: string
+        from: view
+      entity_type:
+        type: string
+        from: view
+      active_at:
+        type: timestamp
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      customers:
+        view: Customers
+        cardinality: many
+        writable: true
+      payment_demands:
+        view: PaymentDemands
+        cardinality: many
+        writable: true
+      payment_methods:
+        view: PaymentMethods
+        cardinality: many
+        writable: true
+      beneficial_owners:
+        view: BeneficialOwners
+        cardinality: many
+        writable: true
+      corporate_officials:
+        view: CorporateOfficials
+        cardinality: many
+        writable: true
+  meter_digests:
+    json_api_type: meter_digests
+    api_version: v1
+    operations:
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes: {}
+    relationships:
+      meter:
+        view: Meters
+        cardinality: one
+        writable: true
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+  meter_notifications:
+    json_api_type: meter_notifications
+    api_version: v1
+    operations:
+    - create
+    - list
+    - retrieve
+    - update
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      meter:
+        view: Meters
+        cardinality: one
+        writable: true
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+  meter_rate_cards:
+    json_api_type: meter_rate_cards
+    api_version: v1
+    operations:
+    - create
+    - list
+    - retrieve
+    - update
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      meter:
+        view: Meters
+        cardinality: one
+        writable: true
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+  meter_ticks:
+    json_api_type: meter_ticks
+    api_version: v1
+    operations:
+    - create
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      idempotency_key:
+        type: string
+        from: view
+      amount:
+        type: integer
+        from: view
+      metadata:
+        type: map
+        from: view
+      triggered_at:
+        type: integer
+        from: view
+      slug:
+        type: string
+        from: view
+    relationships:
+      meter:
+        view: Meters
+        cardinality: one
+        writable: true
+      customer:
+        view: Customers
+        cardinality: one
+        writable: true
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+  meters:
+    json_api_type: meters
+    api_version: v1
+    operations:
+    - create
+    - list
+    - retrieve
+    - update
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      title:
+        type: string
+        from: view
+      slug:
+        type: string
+        from: view
+      aggregation:
+        type: enum
+        values:
+        - count
+        - last
+        - sum
+        - max
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+  payment_demands:
+    json_api_type: payment_demands
+    api_version: v2
+    operations:
+    - create
+    - list
+    - retrieve
+    - update
+    custom_actions:
+    - verb: PATCH
+      path: "/{id}/confirm"
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      processor_state:
+        type: enum
+        from: view
+        values:
+        - pending
+        - processing
+        - succeeded
+        - reversed
+        - failed
+        - disputed
+        snapshot_values:
+        - pending
+        - processing
+        - succeeded
+        - reversed
+        - refunded
+        - failed
+        - disputed
+        snapshot_stale: true
+      succeeded_at:
+        type: timestamp
+        from: view
+      email_receipt:
+        type: boolean
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+      confirmed:
+        type: boolean
+        from: view
+      fee_cents:
+        type: integer
+        writable: false
+        from: view
+      amount_cents:
+        type: integer
+        from: view
+      amount_currency:
+        type: string
+        from: view
+      description:
+        type: string
+        from: view
+      threeds_version:
+        type: string
+        from: view
+      threeds_cryptogram:
+        type: string
+        from: view
+      threeds_status:
+        type: string
+        from: view
+      eci:
+        type: string
+        from: view
+      directory_transaction_eid:
+        type: string
+        from: view
+      acs_transaction_eid:
+        type: string
+        from: view
+      payer_timezone:
+        type: string
+        from: view
+      idempotency_key:
+        type: string
+        from: view
+      capture_method:
+        type: enum
+        from: view
+        values:
+        - automatic
+        - manual
+      cvc2_check:
+        type: enum
+        writable: false
+        from: view
+        values:
+        - match
+        - mismatch
+        - unprocessed
+        - missing
+        - unavailable
+        - unresponsive
+      address_line1_verification:
+        type: enum
+        writable: false
+        from: view
+        values:
+        - match
+        - mismatch
+        - retry
+        - unavailable
+        - unverified
+      postal_code_verification:
+        type: enum
+        writable: false
+        from: view
+        values:
+        - match
+        - mismatch
+        - retry
+        - unavailable
+        - unverified
+      discount_cents:
+        type: integer
+        from: view
+      purchase_reference:
+        type: string
+        from: view
+      purchase_kind:
+        type: enum
+        from: view
+        values:
+        - order
+        - invoice
+      shipping_detail:
+        type: map
+        from: view
+      tax_detail:
+        type: map
+        from: view
+      line_items:
+        type: array[payment_line_item]
+        from: view
+      amount_refunded_cents:
+        type: unknown
+        from: openapi-snapshot-only
+    relationships:
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+      buyer:
+        view: Customers
+        cardinality: one
+        writable: true
+      payer:
+        view: Customers
+        cardinality: one
+        writable: true
+      receiver:
+        view: Customers
+        cardinality: one
+        writable: true
+      payment_subscription:
+        view: PaymentSubscriptions
+        cardinality: one
+        writable: false
+      payment_method:
+        view: PaymentMethods
+        cardinality: one
+        writable: true
+      billing_address:
+        view: ConsumerAddresses
+        cardinality: one
+        writable: true
+      shipping_address:
+        view: ConsumerAddresses
+        cardinality: one
+        writable: true
+  payment_methods:
+    json_api_type: payment_methods
+    api_version: v2
+    operations:
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields:
+    - card_cvv_token
+    - card_pan_token
+    attributes:
+      nickname:
+        type: string
+        from: view
+      card_bin:
+        type: string
+        from: view
+      card_cvv_token:
+        type: string
+        from: view
+      last_four:
+        type: string
+        from: view
+      card_pan_token:
+        type: string
+        from: view
+      description:
+        type: string
+        from: view
+      external_state:
+        type: enum
+        from: view
+        values:
+        - pending
+        - confirmed
+        - failed
+        - errored
+      kind:
+        type: enum
+        from: view
+        values:
+        - checking
+        - savings
+        - visa
+        - mastercard
+        - amex
+        - discover
+        - diners
+        - elo
+        - hiper
+        - hipercard
+        - jcb
+        - maestro
+        - mir
+        - unionpay
+        - unknown
+        values_from: openapi-snapshot
+      expiry_month:
+        type: integer
+        from: view
+      expiry_year:
+        type: integer
+        from: view
+      discarded_at:
+        type: timestamp
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      address:
+        view: ConsumerAddresses
+        cardinality: one
+        writable: true
+      customer:
+        view: Customers
+        cardinality: one
+        writable: true
+      payment_demands:
+        view: PaymentDemands
+        cardinality: many
+        writable: false
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+  payment_subscriptions:
+    json_api_type: payment_subscriptions
+    api_version: v2
+    operations:
+    - create
+    - list
+    - retrieve
+    - update
+    custom_actions:
+    - verb: PATCH
+      path: "/{id}/confirm"
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+      status:
+        type: enum
+        writable: false
+        from: view
+        values:
+        - pending
+        - active
+        - paused
+        - cancelled
+      email_receipt:
+        type: boolean
+        from: view
+      alert_receipt:
+        type: boolean
+        from: view
+      confirmed:
+        type: boolean
+        from: view
+      fee_cents:
+        type: integer
+        writable: false
+        from: view
+      amount_cents:
+        type: integer
+        from: view
+      amount_currency:
+        type: string
+        from: view
+      description:
+        type: string
+        from: view
+      threeds_version:
+        type: string
+        from: view
+      threeds_cryptogram:
+        type: string
+        from: view
+      threeds_status:
+        type: string
+        from: view
+      eci:
+        type: string
+        from: view
+      directory_transaction_eid:
+        type: string
+        from: view
+      acs_transaction_eid:
+        type: string
+        from: view
+      payer_timezone:
+        type: string
+        from: view
+      idempotency_key:
+        type: string
+        from: view
+      cvc2_check:
+        type: enum
+        writable: false
+        from: view
+        values:
+        - match
+        - mismatch
+        - unprocessed
+        - missing
+        - unavailable
+        - unresponsive
+      address_line1_verification:
+        type: enum
+        writable: false
+        from: view
+        values:
+        - match
+        - mismatch
+        - retry
+        - unavailable
+        - unverified
+      postal_code_verification:
+        type: enum
+        writable: false
+        from: view
+        values:
+        - match
+        - mismatch
+        - retry
+        - unavailable
+        - unverified
+      discount_cents:
+        type: integer
+        from: view
+      purchase_reference:
+        type: string
+        from: view
+      purchase_kind:
+        type: enum
+        from: view
+        values:
+        - order
+        - invoice
+      shipping_detail:
+        type: map
+        from: view
+      tax_detail:
+        type: map
+        from: view
+      line_items:
+        type: array[payment_line_item]
+        from: view
+      slug:
+        type: string
+        from: view
+      billing_cycle_anchor_at:
+        type: timestamp
+        from: view
+      next_billing_at:
+        type: timestamp
+        writable: false
+        from: view
+      current_period_start_at:
+        type: timestamp
+        writable: false
+        from: view
+      current_period_end_at:
+        type: timestamp
+        writable: false
+        from: view
+      trial_end_at:
+        type: timestamp
+        from: view
+      billing_scheme:
+        type: enum
+        from: view
+        values:
+        - per_unit
+      canceled_at_period_end:
+        type: boolean
+        from: view
+      subscription_notification_email:
+        type: string
+        from: view
+      proration_behavior:
+        type: enum
+        from: view
+        values:
+        - none
+        - create_prorations
+      billing_period:
+        type: enum
+        from: view
+        values:
+        - one_day
+        - seven_days
+        - fourteen_days
+        - thirty_days
+        - one_month
+        - six_months
+        - twelve_months
+        values_from: openapi-snapshot
+      canceled_at:
+        type: string
+        writable: false
+        from: view
+      last_processed_at:
+        type: timestamp
+        writable: false
+        from: view
+      last_active_at:
+        type: timestamp
+        writable: false
+        from: view
+      last_paused_at:
+        type: timestamp
+        writable: false
+        from: view
+    relationships:
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+      billing_address:
+        view: ConsumerAddresses
+        cardinality: one
+        writable: true
+      shipping_address:
+        view: ConsumerAddresses
+        cardinality: one
+        writable: true
+      buyer:
+        view: Customers
+        cardinality: one
+        writable: true
+      receiver:
+        view: Customers
+        cardinality: one
+        writable: true
+      payer:
+        view: Customers
+        cardinality: one
+        writable: true
+      payment_method:
+        view: PaymentMethods
+        cardinality: one
+        writable: true
+  permissions:
+    json_api_type: permissions
+    api_version: v2
+    operations:
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      slug:
+        type: string
+        from: view
+      description:
+        type: string
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      merchant_tokens:
+        view: MerchantTokens
+        cardinality: many
+        writable: true
+  personal_identifications:
+    json_api_type: personal_identifications
+    api_version: v2
+    operations:
+    - create
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields:
+    - dob
+    - email
+    - full_name
+    - id_number
+    - name_on_document
+    - personal_name
+    - phone_number
+    - surname
+    attributes:
+      nationality:
+        type: string
+        from: view
+      dob:
+        type: date
+        from: view
+      email:
+        type: email
+        from: view
+      full_name:
+        type: string
+        from: view
+      id_number:
+        type: string
+        from: view
+      name_on_document:
+        type: string
+        from: view
+      personal_name:
+        type: string
+        from: view
+      surname:
+        type: string
+        from: view
+      phone_number:
+        type: phone
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      legal_address:
+        view: LegalAddresses
+        cardinality: one
+        writable: true
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: true
+      beneficial_owners:
+        view: BeneficialOwners
+        cardinality: many
+        writable: true
+      corporate_officials:
+        view: CorporateOfficials
+        cardinality: many
+        writable: true
+  processor_details:
+    json_api_type: processor_details
+    api_version: v2
+    operations:
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      type:
+        type: string
+        from: view
+      onboarding_state:
+        type: enum
+        from: view
+        values:
+        - pending
+        - approved
+      processing_state:
+        type: enum
+        from: view
+        values:
+        - disabled
+        - enabled
+        - monitoring
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+      merchant_tokens:
+        view: MerchantTokens
+        cardinality: many
+        writable: true
+  red_flags:
+    json_api_type: red_flags
+    api_version: v2
+    operations:
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      comment:
+        type: string
+        from: view
+      external_metadata:
+        type: map
+        from: view
+      source:
+        type: string
+        from: view
+      status:
+        type: enum
+        from: view
+        values:
+        - active
+        - penalized
+        - cleared
+        - warned
+      violation:
+        type: enum
+        from: view
+        values:
+        - email_concerns
+        - multiple_merchants_for_email
+        - low_risk
+        - moderate_risk
+        - high_risk
+        - bram
+        - gbpp
+        - terms
+        - offline_or_parked
+        - rogue
+        - transaction_laundering_suspected
+        - transaction_laundering_confirmed
+        values_from: openapi-snapshot
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+  refund_demands:
+    json_api_type: refund_demands
+    api_version: v2
+    operations:
+    - create
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: true
+    sensitive_fields: []
+    attributes:
+      state:
+        type: enum
+        from: view
+        values:
+        - pending
+        - processing
+        - succeeded
+        - failed
+        snapshot_values:
+        - pending
+        - processing
+        - succeeded
+        - failed
+        - errored
+        snapshot_stale: true
+      reason:
+        type: enum
+        from: view
+        values:
+        - service_not_delivered
+        - duplicate_charge
+        - unauthorized_transaction
+        - technical_issue
+        - customer_canceled
+        - dissatisfied_experience
+        - compliance_issue
+        - custom
+        snapshot_values:
+        - service_not_delivered
+        - duplicate_charge
+        - unauthorized_transaction
+        - technical_issue
+        - customer_canceled
+        - dissatisfied_experience
+        - compliance_issue
+        snapshot_stale: true
+      reason_note:
+        type: string
+        from: view
+      amount_cents:
+        type: integer
+        from: view
+      amount_currency:
+        type: string
+        from: view
+      idempotency_key:
+        type: string
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+      payment_demand:
+        view: PaymentDemands
+        cardinality: one
+        writable: true
+  webhook_deliveries:
+    json_api_type: webhook_deliveries
+    api_version: v2
+    operations:
+    - list
+    - retrieve
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields: []
+    attributes:
+      fails_count:
+        type: integer
+        from: view
+      first_try_at:
+        type: timestamp
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      event:
+        view: Events
+        cardinality: one
+        writable: true
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+      webhook_subscription:
+        view: WebhookSubscriptions
+        cardinality: one
+        writable: true
+  webhook_subscriptions:
+    json_api_type: webhook_subscriptions
+    api_version: v2
+    operations:
+    - create
+    - list
+    - retrieve
+    - update
+    custom_actions: []
+    idempotent_writes: false
+    sensitive_fields:
+    - secret_key
+    attributes:
+      status:
+        type: string
+        from: view
+      mode:
+        type: string
+        from: view
+      concurrency_limit:
+        type: integer
+        from: view
+      description:
+        type: string
+        from: view
+      events:
+        type: array[string]
+        from: view
+      secret_key:
+        type: string
+        from: view
+      url:
+        type: string
+        from: view
+      archived_at:
+        type: timestamp
+        from: view
+      created_at:
+        type: timestamp
+        from: view
+      updated_at:
+        type: timestamp
+        from: view
+    relationships:
+      merchant:
+        view: Merchants
+        cardinality: one
+        writable: false
+      webhook_deliveries:
+        view: WebhookDeliveries
+        cardinality: many
+        writable: true
